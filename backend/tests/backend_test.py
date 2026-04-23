@@ -98,21 +98,28 @@ def test_products_auth_gated(session):
         assert session.get(f"{API}{path}", timeout=15).status_code == 401
 
 
-def test_seed_products(session, headers):
+def test_seed_products_legacy_no_seo(session, headers):
+    """Legacy /products/seed must NOT apply SEO -> raw titles preserved (with brand+EAN)."""
     r = session.post(f"{API}/products/seed", headers=headers, timeout=20)
     assert r.status_code == 200
     j = r.json()
-    assert j["created"] == 3 and j["total_available"] == 3
+    assert j["created"] == 8 and j["total_available"] == 8
+    assert j["apply_seo"] is False
     # idempotent
     r2 = session.post(f"{API}/products/seed", headers=headers, timeout=20)
-    assert r2.json()["created"] == 0
+    assert r2.json()["created"] == 0 and r2.json()["skipped"] == 8
+    # Raw titles preserved -> include brand & EAN, may exceed 60
+    products = session.get(f"{API}/products", headers=headers, timeout=15).json()
+    jd001 = next(p for p in products if p["sku"] == "JD-CRM-001")
+    assert "DermaBrasil" in jd001["title"]
+    assert "7891234560011" in jd001["title"]
 
 
 def test_list_and_get(session, headers):
     r = session.get(f"{API}/products", headers=headers, timeout=15)
     assert r.status_code == 200
     products = r.json()
-    assert len(products) == 3
+    assert len(products) == 8
     for p in products:
         assert "_id" not in p
         assert "amazon" in p and "shopee" in p and "kwai" in p
@@ -139,20 +146,35 @@ def test_create_update_delete(session, headers):
 
 
 def test_sync_success_and_stock_replication(session, headers):
-    # JD001 has 6 bullets, weight, valid
-    products = session.get(f"{API}/products", headers=headers, timeout=15).json()
-    jd001 = next(p for p in products if p["sku"] == "JD-CRM-001")
-    r = session.post(f"{API}/products/{jd001['id']}/sync", headers=headers, timeout=20)
+    """Create a fully-valid product and verify sync flips to 'synced' + replicates stock."""
+    payload = {
+        "sku": f"TEST_SYNC_{uuid.uuid4().hex[:6]}",
+        "title": "Creme Facial Hidratante 50g JD001",  # <60
+        "product_code": "JD001",
+        "stock_johndrop": 45, "stock_bling": 0,
+        "amazon": {"enabled": True, "bullet_points": ["a"*20, "b"*20, "c"*20, "d"*20, "e"*20, "f"*20]},
+        "shopee": {"enabled": True, "weight_kg": 0.15},
+    }
+    pid = session.post(f"{API}/products", headers=headers, json=payload, timeout=15).json()["id"]
+    r = session.post(f"{API}/products/{pid}/sync", headers=headers, timeout=20)
     assert r.status_code == 200
     j = r.json()
     assert j["sync_status"] == "synced"
-    assert j["stock_bling"] == j["stock_johndrop"]
+    assert j["stock_bling"] == j["stock_johndrop"] == 45
 
 
 def test_sync_out_of_stock(session, headers):
-    products = session.get(f"{API}/products", headers=headers, timeout=15).json()
-    jd002 = next(p for p in products if p["sku"] == "JD-ELE-002")
-    r = session.post(f"{API}/products/{jd002['id']}/sync", headers=headers, timeout=20)
+    """Create a product with 0 stock and verify out-of-stock error on sync."""
+    payload = {
+        "sku": f"TEST_OOS_{uuid.uuid4().hex[:6]}",
+        "title": "Sem Estoque JD002",
+        "product_code": "JD002",
+        "stock_johndrop": 0, "stock_bling": 0,
+        "amazon": {"enabled": True, "bullet_points": ["a"*20]*6},
+        "shopee": {"enabled": True, "weight_kg": 0.5},
+    }
+    pid = session.post(f"{API}/products", headers=headers, json=payload, timeout=15).json()["id"]
+    r = session.post(f"{API}/products/{pid}/sync", headers=headers, timeout=20)
     j = r.json()
     assert j["sync_status"] == "error"
     assert "estoque" in j["sync_message"].lower()
@@ -242,6 +264,174 @@ def test_ai_generate_description(session, headers):
     if r.status_code != 200:
         pytest.skip(f"LLM error: {r.text[:200]}")
     assert isinstance(r.json()["description"], str) and len(r.json()["description"]) > 50
+
+
+
+# ============================================================
+# Iteration 2: JohnDrop import (with SEO) + Pricing calculator
+# ============================================================
+
+# Use isolated user so prior seed/products don't interfere with import counts.
+EMAIL2 = f"test+{uuid.uuid4().hex[:6]}@blingdrop.com"
+
+
+@pytest.fixture(scope="module")
+def auth2(session):
+    r = session.post(f"{API}/auth/register",
+                     json={"email": EMAIL2, "password": PASSWORD, "name": NAME}, timeout=30)
+    assert r.status_code == 200, r.text
+    return {"token": r.json()["token"], "user_id": r.json()["user"]["user_id"]}
+
+
+@pytest.fixture(scope="module")
+def headers2(auth2):
+    return {"Authorization": f"Bearer {auth2['token']}", "Content-Type": "application/json"}
+
+
+# -------- JohnDrop /api/johndrop/import --------
+def test_johndrop_import_blocked_when_disconnected(session, headers2):
+    r = session.post(f"{API}/johndrop/import", headers=headers2,
+                     json={"apply_seo": True}, timeout=20)
+    assert r.status_code == 400
+    assert "johndrop" in r.json()["detail"].lower() or "conecte" in r.json()["detail"].lower()
+
+
+def test_johndrop_import_after_connect_creates_8_with_seo(session, headers2):
+    # Connect JohnDrop
+    rt = session.post(f"{API}/integrations/toggle", headers=headers2,
+                      json={"service": "johndrop", "connected": True}, timeout=15)
+    assert rt.status_code == 200
+    assert rt.json()["johndrop"]["connected"] is True
+
+    r = session.post(f"{API}/johndrop/import", headers=headers2,
+                     json={"apply_seo": True}, timeout=20)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["created"] == 8 and j["skipped"] == 0 and j["total_available"] == 8
+    assert j["apply_seo"] is True
+    # Items contain seo_title/title_length/raw_title
+    assert len(j["items"]) == 8
+    for it in j["items"]:
+        assert it["title_length"] <= 60
+        assert "raw_title" in it and "seo_title" in it
+
+
+def test_johndrop_import_idempotent_second_call(session, headers2):
+    r = session.post(f"{API}/johndrop/import", headers=headers2,
+                     json={"apply_seo": True}, timeout=20)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["created"] == 0 and j["skipped"] == 8
+
+
+def test_imported_products_have_seo_titles(session, headers2):
+    """All imported products must: <=60 chars, no brand, no EAN, contain product_code."""
+    products = session.get(f"{API}/products", headers=headers2, timeout=15).json()
+    assert len(products) == 8
+    for p in products:
+        title = p["title"]
+        assert len(title) <= 60, f"Title >60: {title!r}"
+        if p.get("brand"):
+            assert p["brand"].lower() not in title.lower(), f"Brand leaked in title: {title}"
+        if p.get("ean"):
+            assert p["ean"] not in title, f"EAN leaked in title: {title}"
+        assert p["product_code"].lower() in title.lower(), f"Code missing in title: {title}"
+
+
+def test_apply_seo_format_on_jd001(session, headers2):
+    """Specifically validate the example from spec for JD-CRM-001."""
+    products = session.get(f"{API}/products", headers=headers2, timeout=15).json()
+    jd001 = next(p for p in products if p["sku"] == "JD-CRM-001")
+    title = jd001["title"]
+    assert "DermaBrasil" not in title
+    assert "7891234560011" not in title
+    assert "JD001" in title
+    assert len(title) <= 60
+    # Should retain core terms
+    assert "Creme" in title and "Facial" in title
+
+
+# -------- /api/johndrop/import apply_seo=false --------
+EMAIL3 = f"test+{uuid.uuid4().hex[:6]}@blingdrop.com"
+
+
+@pytest.fixture(scope="module")
+def headers3(session):
+    r = session.post(f"{API}/auth/register",
+                     json={"email": EMAIL3, "password": PASSWORD, "name": NAME}, timeout=30)
+    token = r.json()["token"]
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    session.post(f"{API}/integrations/toggle", headers=h,
+                 json={"service": "johndrop", "connected": True}, timeout=15)
+    return h
+
+
+def test_johndrop_import_apply_seo_false_keeps_raw(session, headers3):
+    r = session.post(f"{API}/johndrop/import", headers=headers3,
+                     json={"apply_seo": False}, timeout=20)
+    assert r.status_code == 200 and r.json()["created"] == 8
+    products = session.get(f"{API}/products", headers=headers3, timeout=15).json()
+    jd001 = next(p for p in products if p["sku"] == "JD-CRM-001")
+    assert "DermaBrasil" in jd001["title"]
+    assert "7891234560011" in jd001["title"]
+    assert len(jd001["title"]) > 60  # raw is long
+
+
+# -------- /api/johndrop/import auth gating --------
+def test_johndrop_import_requires_auth(session):
+    r = session.post(f"{API}/johndrop/import", json={"apply_seo": True}, timeout=15)
+    assert r.status_code == 401
+
+
+# -------- /api/pricing/calculate --------
+def test_pricing_requires_auth(session):
+    r = session.post(f"{API}/pricing/calculate",
+                     json={"cost": 32.5, "packaging": 2, "campaigns": 5}, timeout=15)
+    assert r.status_code == 401
+
+
+def test_pricing_main_formula(session, headers):
+    r = session.post(f"{API}/pricing/calculate", headers=headers,
+                     json={"cost": 32.5, "packaging": 2, "campaigns": 5}, timeout=15)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["selling_price"] == 73.39
+    b = j["breakdown"]
+    assert b["total_cost"] == 39.5
+    assert b["commission_pct"] == 0.18
+    assert b["fixed_fee"] == 6.0
+    assert b["min_margin_pct"] == 0.20
+    assert b["commission_value"] == 13.21
+    assert b["net_profit"] == 14.68
+
+
+def test_pricing_zero_cost(session, headers):
+    r = session.post(f"{API}/pricing/calculate", headers=headers,
+                     json={"cost": 0, "packaging": 0, "campaigns": 0}, timeout=15)
+    assert r.status_code == 200
+    assert r.json()["selling_price"] == 9.68
+
+
+def test_pricing_default_optional_fields(session, headers):
+    """packaging & campaigns default to 0 when omitted."""
+    r = session.post(f"{API}/pricing/calculate", headers=headers,
+                     json={"cost": 32.5}, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    # (32.5 + 6) / 0.62 = 62.0967
+    assert j["selling_price"] == 62.10
+
+
+def test_pricing_negative_cost_rejected(session, headers):
+    r = session.post(f"{API}/pricing/calculate", headers=headers,
+                     json={"cost": -5, "packaging": 2, "campaigns": 5}, timeout=15)
+    assert r.status_code == 422
+
+
+def test_pricing_negative_packaging_rejected(session, headers):
+    r = session.post(f"{API}/pricing/calculate", headers=headers,
+                     json={"cost": 10, "packaging": -1, "campaigns": 0}, timeout=15)
+    assert r.status_code == 422
 
 
 # -------- AI auth gating --------

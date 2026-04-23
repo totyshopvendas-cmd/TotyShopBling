@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import re
 import logging
 import uuid
 import jwt
@@ -459,14 +460,14 @@ SEED_PRODUCTS = [
     {
         "sku": "JD-CRM-001",
         "product_code": "JD001",
-        "title": "Creme Facial Hidratante Antioxidante 50g JD001",
+        "title": "DermaBrasil Creme Facial Hidratante Antioxidante 50g 7891234560011",
         "brand": "DermaBrasil",
         "ean": "7891234560011",
         "description": "Creme facial hidratante com ativos antioxidantes para uso diário.",
         "price": 89.90,
         "cost": 32.50,
         "stock_johndrop": 45,
-        "stock_bling": 45,
+        "stock_bling": 0,
         "images": [
             "https://images.pexels.com/photos/19080517/pexels-photo-19080517.png?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
         ],
@@ -492,21 +493,19 @@ SEED_PRODUCTS = [
             "width_cm": 5.0,
             "height_cm": 5.0,
         },
-        "kwai": {
-            "enabled": False,
-        },
+        "kwai": {"enabled": False},
     },
     {
         "sku": "JD-ELE-002",
         "product_code": "JD002",
-        "title": "Mini Ventilador USB Recarregável Portátil JD002",
+        "title": "CoolTech Mini Ventilador USB Recarregável Portátil 7891234560028",
         "brand": "CoolTech",
         "ean": "7891234560028",
         "description": "Ventilador portátil com bateria recarregável e 3 velocidades.",
         "price": 79.90,
         "cost": 28.00,
-        "stock_johndrop": 0,
-        "stock_bling": 12,
+        "stock_johndrop": 12,
+        "stock_bling": 0,
         "images": [
             "https://images.unsplash.com/photo-1664455340023-214c33a9d0bd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHwyfHxicmF6aWxpYW4lMjBlY29tbWVyY2UlMjBwcm9kdWN0c3xlbnwwfHx8fDE3NzY5MDM1NjJ8MA&ixlib=rb-4.1.0&q=85"
         ],
@@ -541,16 +540,16 @@ SEED_PRODUCTS = [
     {
         "sku": "JD-CAS-003",
         "product_code": "JD003",
-        "title": "Organizador Multiuso Cozinha Gaveta JD003",
+        "title": "CasaPratica Organizador Multiuso Cozinha Gaveta 7891234560035",
         "brand": "CasaPratica",
         "ean": "7891234560035",
         "description": "Organizador modular para gavetas de cozinha.",
         "price": 49.90,
         "cost": 18.00,
         "stock_johndrop": 120,
-        "stock_bling": 80,
+        "stock_bling": 0,
         "images": [
-            "https://images.unsplash.com/photo-1584472666879-7d92db132958?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwzfHxlY29tbWVyY2UlMjBsb2dpc3RpY3MlMjBkYXNoYm9hcmR8ZW58MHx8fHwxNzc2OTAzNTYyfDA&ixlib=rb-4.1.0&q=85"
+            "https://images.unsplash.com/photo-1584472666879-7d92db132958?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwzfHxlY29tbWVyY2UlMjBkYXNoYm9hcmR8ZW58MHx8fHwxNzc2OTAzNTYyfDA&ixlib=rb-4.1.0&q=85"
         ],
         "amazon": {
             "enabled": True,
@@ -574,37 +573,273 @@ SEED_PRODUCTS = [
         },
         "kwai": {"enabled": False},
     },
+    {
+        "sku": "JD-PET-004",
+        "product_code": "JD004",
+        "title": "PetFun Escova Removedora Pelos Cães Gatos 7891234560042",
+        "brand": "PetFun",
+        "ean": "7891234560042",
+        "description": "Escova autolimpante para remoção de pelos soltos.",
+        "price": 59.90,
+        "cost": 19.50,
+        "stock_johndrop": 80,
+        "stock_bling": 0,
+        "images": ["https://images.unsplash.com/photo-1583337130417-3346a1be7dee?w=600"],
+        "amazon": {
+            "enabled": True,
+            "category": "Pet Shop > Higiene",
+            "bullet_points": [
+                "Remove pelos mortos e reduz queda em até 95%",
+                "Botão autolimpante recolhe os pelos com um clique",
+                "Cabo ergonômico antiderrapante para uso prolongado",
+                "Indicado para pelagens curtas, médias e longas",
+                "Estimula circulação e deixa o pelo brilhante",
+                "Tamanho único com cerdas flexíveis (Código JD004)",
+            ],
+        },
+        "shopee": {
+            "enabled": True,
+            "category": "Pet Shop > Cuidados",
+            "weight_kg": 0.2,
+            "length_cm": 18.0,
+            "width_cm": 8.0,
+            "height_cm": 4.0,
+        },
+        "kwai": {"enabled": False},
+    },
+    {
+        "sku": "JD-FIT-005",
+        "product_code": "JD005",
+        "title": "FitMove Corda Pular Profissional Rolamento 7891234560059",
+        "brand": "FitMove",
+        "ean": "7891234560059",
+        "description": "Corda de pular com rolamento e cabo acolchoado.",
+        "price": 39.90,
+        "cost": 12.00,
+        "stock_johndrop": 200,
+        "stock_bling": 0,
+        "images": ["https://images.unsplash.com/photo-1594737625785-a6cbdabd333c?w=600"],
+        "amazon": {
+            "enabled": True,
+            "category": "Esporte > Funcional",
+            "bullet_points": [
+                "Rolamento em aço que garante rotação sem travar",
+                "Cabo ergonômico com espuma EVA antiderrapante",
+                "Comprimento ajustável de 2,4m a 3m para qualquer altura",
+                "Ideal para crossfit, boxe e treino HIIT em casa",
+                "Cabo de aço revestido em PVC resistente",
+                "Leve, compacta e fácil de transportar (Código JD005)",
+            ],
+        },
+        "shopee": {
+            "enabled": True,
+            "category": "Esporte & Lazer",
+            "weight_kg": 0.3,
+            "length_cm": 20.0,
+            "width_cm": 10.0,
+            "height_cm": 5.0,
+        },
+        "kwai": {"enabled": False},
+    },
+    {
+        "sku": "JD-HOM-006",
+        "product_code": "JD006",
+        "title": "LuzVerde Luminária LED Mesa Touch Regulável 7891234560066",
+        "brand": "LuzVerde",
+        "ean": "7891234560066",
+        "description": "Luminária de mesa LED com controle touch e 3 temperaturas.",
+        "price": 129.90,
+        "cost": 42.00,
+        "stock_johndrop": 35,
+        "stock_bling": 0,
+        "images": ["https://images.unsplash.com/photo-1565814329452-e1efa11c5b89?w=600"],
+        "amazon": {
+            "enabled": True,
+            "category": "Iluminação > Mesa",
+            "bullet_points": [
+                "3 temperaturas de cor (fria, neutra e quente)",
+                "Controle touch com regulagem contínua de intensidade",
+                "Braço flexível 360° que ilumina qualquer ângulo",
+                "Entrada USB-C e função lembrete para evitar fadiga visual",
+                "Modo noturno com timer automático de 60 minutos",
+                "Consumo econômico de 6W LED (Código JD006)",
+            ],
+        },
+        "shopee": {
+            "enabled": True,
+            "category": "Iluminação & Decoração",
+            "weight_kg": 0.9,
+            "length_cm": 40.0,
+            "width_cm": 15.0,
+            "height_cm": 12.0,
+        },
+        "kwai": {
+            "enabled": True,
+            "category": "Eletrônicos > Iluminação",
+            "voltage": "Bivolt automático (100-240V)",
+            "tech_specs": "Potência 6W LED, temperatura 3000K-6500K",
+        },
+    },
+    {
+        "sku": "JD-BEL-007",
+        "product_code": "JD007",
+        "title": "BeautyRio Kit Pincéis Maquiagem 12 Peças Profissional 7891234560073",
+        "brand": "BeautyRio",
+        "ean": "7891234560073",
+        "description": "Kit com 12 pincéis profissionais para maquiagem facial.",
+        "price": 69.90,
+        "cost": 22.00,
+        "stock_johndrop": 60,
+        "stock_bling": 0,
+        "images": ["https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=600"],
+        "amazon": {
+            "enabled": True,
+            "category": "Beleza > Maquiagem > Acessórios",
+            "bullet_points": [
+                "Kit completo com 12 pincéis para rosto, olhos e boca",
+                "Cerdas sintéticas premium que não soltam fios",
+                "Cabos em madeira com acabamento matte antiderrapante",
+                "Estojo organizador incluso para transporte seguro",
+                "Fácil higienização com água e sabão neutro",
+                "Ideal para uso profissional e pessoal (Código JD007)",
+            ],
+        },
+        "shopee": {
+            "enabled": True,
+            "category": "Beleza & Cuidado Pessoal > Maquiagem",
+            "weight_kg": 0.4,
+            "length_cm": 20.0,
+            "width_cm": 15.0,
+            "height_cm": 3.0,
+        },
+        "kwai": {"enabled": False},
+    },
+    {
+        "sku": "JD-ESC-008",
+        "product_code": "JD008",
+        "title": "OfficeMax Suporte Ergonômico Notebook Ajustável 7891234560080",
+        "brand": "OfficeMax",
+        "ean": "7891234560080",
+        "description": "Suporte ergonômico dobrável para notebook com altura ajustável.",
+        "price": 99.90,
+        "cost": 34.00,
+        "stock_johndrop": 55,
+        "stock_bling": 0,
+        "images": ["https://images.unsplash.com/photo-1527443224154-c4a3942d3acf?w=600"],
+        "amazon": {
+            "enabled": True,
+            "category": "Escritório > Ergonomia",
+            "bullet_points": [
+                "6 alturas ajustáveis para postura ergonômica ideal",
+                "Alumínio resistente suporta notebooks até 17 polegadas",
+                "Design dobrável ocupa menos de 2cm quando guardado",
+                "Recortes de ventilação evitam superaquecimento",
+                "Base antiderrapante estabiliza o equipamento",
+                "Compatível com Macbook, Dell, Lenovo e mais (Código JD008)",
+            ],
+        },
+        "shopee": {
+            "enabled": True,
+            "category": "Informática > Acessórios",
+            "weight_kg": 0.7,
+            "length_cm": 26.0,
+            "width_cm": 22.0,
+            "height_cm": 2.0,
+        },
+        "kwai": {"enabled": False},
+    },
 ]
+
+
+def apply_seo_format(raw_title: str, brand: Optional[str], ean: Optional[str], product_code: str) -> str:
+    """Rule-based SEO formatter for JohnDrop imports.
+    - Remove brand & EAN from title
+    - Collapse whitespace
+    - Ensure product_code at the end
+    - Hard truncate to 60 chars
+    """
+    t = raw_title or ""
+    if brand:
+        t = re.sub(re.escape(brand), "", t, flags=re.IGNORECASE)
+    if ean:
+        t = t.replace(ean, "")
+    t = re.sub(r"\s+", " ", t).strip(" -|,.")
+    if product_code and product_code.lower() not in t.lower():
+        suffix = f" {product_code}"
+        max_base = 60 - len(suffix)
+        if len(t) > max_base:
+            t = t[:max_base].rstrip(" -,|.")
+        t = (t + suffix).strip()
+    if len(t) > 60:
+        t = t[:60].rstrip(" -,|.")
+    return t
 
 
 @api_router.post("/products/seed")
 async def seed_products(user: UserPublic = Depends(get_current_user)):
+    return await _import_johndrop_internal(user, apply_seo=False)
+
+
+class JohnDropImportIn(BaseModel):
+    apply_seo: bool = True
+
+
+async def _import_johndrop_internal(user: UserPublic, apply_seo: bool = True):
     created = 0
+    skipped = 0
+    imported_items = []
     for p in SEED_PRODUCTS:
         existing = await db.products.find_one(
             {"sku": p["sku"], "owner_id": user.user_id}, {"_id": 0}
         )
         if existing:
+            skipped += 1
             continue
         pid = f"prod_{uuid.uuid4().hex[:12]}"
         now = _now()
-        sync_status = "pending"
-        if p["stock_johndrop"] != p["stock_bling"]:
-            sync_status = "pending"
-        if p["stock_johndrop"] <= 0:
-            sync_status = "out_of_stock"
+        data = {**p}
+        raw_title = data["title"]
+        if apply_seo:
+            data["title"] = apply_seo_format(
+                raw_title, data.get("brand"), data.get("ean"), data["product_code"]
+            )
+        sync_status = "out_of_stock" if data["stock_johndrop"] <= 0 else "pending"
         doc = {
             "id": pid,
             "owner_id": user.user_id,
-            **p,
+            **data,
             "sync_status": sync_status,
-            "sync_message": "Importado da JohnDrop - aguardando sincronização Bling",
+            "sync_message": "Importado da JohnDrop - título ajustado para formato SEO 60 caracteres" if apply_seo else "Importado da JohnDrop - aguardando sincronização Bling",
             "created_at": now,
             "updated_at": now,
         }
         await db.products.insert_one(doc)
         created += 1
-    return {"created": created, "total_available": len(SEED_PRODUCTS)}
+        imported_items.append({
+            "sku": data["sku"],
+            "product_code": data["product_code"],
+            "raw_title": raw_title,
+            "seo_title": data["title"],
+            "title_length": len(data["title"]),
+        })
+    return {
+        "created": created,
+        "skipped": skipped,
+        "total_available": len(SEED_PRODUCTS),
+        "apply_seo": apply_seo,
+        "items": imported_items,
+    }
+
+
+@api_router.post("/johndrop/import")
+async def johndrop_import(data: JohnDropImportIn, user: UserPublic = Depends(get_current_user)):
+    """Importa automaticamente da JohnDrop todos os produtos que ainda não estão em Meus Produtos.
+    Aplica o formato SEO (sem marca, sem EAN, com código do produto, máx 60 chars)."""
+    # Require JohnDrop connected
+    integ = await db.integrations.find_one({"user_id": user.user_id}, {"_id": 0})
+    if not integ or not integ.get("johndrop", {}).get("connected"):
+        raise HTTPException(status_code=400, detail="Conecte a JohnDrop em Integrações antes de importar")
+    return await _import_johndrop_internal(user, apply_seo=data.apply_seo)
 
 
 # ============ Dashboard ============
@@ -770,6 +1005,45 @@ async def ai_generate_description(data: AIGenerateDescriptionIn, user: UserPubli
     user_text = f"Título: {data.title}\n\nBullets:\n{bullets_text}"
     desc = await _llm_generate(system, user_text, data.model)
     return {"description": desc}
+
+
+# ============ Pricing Calculator (Calculadora Blindada) ============
+# Fixed constants mirroring https://calcblindada-krrwemcx.manus.space/
+COMMISSION_PCT = 0.18
+FIXED_FEE = 6.00
+MIN_MARGIN_PCT = 0.20
+
+
+class PricingIn(BaseModel):
+    cost: float = Field(..., ge=0)
+    packaging: float = Field(0.0, ge=0)
+    campaigns: float = Field(0.0, ge=0)
+
+
+@api_router.post("/pricing/calculate")
+async def pricing_calculate(data: PricingIn, user: UserPublic = Depends(get_current_user)):
+    total_cost = data.cost + data.packaging + data.campaigns
+    # P * (1 - commission - margin) = total_cost + fixed_fee
+    divisor = 1 - COMMISSION_PCT - MIN_MARGIN_PCT
+    selling_price = (total_cost + FIXED_FEE) / divisor
+    commission_value = selling_price * COMMISSION_PCT
+    margin_value = selling_price * MIN_MARGIN_PCT
+    net_profit = selling_price - commission_value - FIXED_FEE - total_cost
+    return {
+        "selling_price": round(selling_price, 2),
+        "breakdown": {
+            "cost": round(data.cost, 2),
+            "packaging": round(data.packaging, 2),
+            "campaigns": round(data.campaigns, 2),
+            "total_cost": round(total_cost, 2),
+            "commission_pct": COMMISSION_PCT,
+            "commission_value": round(commission_value, 2),
+            "fixed_fee": FIXED_FEE,
+            "min_margin_pct": MIN_MARGIN_PCT,
+            "min_margin_value": round(margin_value, 2),
+            "net_profit": round(net_profit, 2),
+        },
+    }
 
 
 # ============ Health ============

@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import Layout, { PageHeader } from "../components/Layout";
 import { api } from "../lib/api";
 import { toast } from "sonner";
-import { CheckCircle2, XCircle, MessageSquare, Zap } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { CheckCircle2, XCircle, MessageSquare, Zap, Download } from "lucide-react";
 
 const SERVICES = [
   {
@@ -39,6 +40,8 @@ export default function Integrations() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [discordHook, setDiscordHook] = useState("");
+  const [importing, setImporting] = useState(false);
+  const navigate = useNavigate();
 
   const load = async () => {
     try {
@@ -57,6 +60,23 @@ export default function Integrations() {
       setStatus(data);
       toast.success(connected ? "Conectado" : "Desconectado");
     } catch (_e) { toast.error("Falha"); }
+  };
+
+  const importFromJohnDrop = async () => {
+    setImporting(true);
+    try {
+      const { data } = await api.post("/johndrop/import", { apply_seo: true });
+      if (data.created === 0) {
+        toast.info(`Catálogo já sincronizado (${data.skipped} produtos já importados)`);
+      } else {
+        toast.success(`${data.created} produtos importados com formato SEO aplicado`);
+        setTimeout(() => navigate("/products"), 1500);
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Falha na importação");
+    } finally {
+      setImporting(false);
+    }
   };
 
   return (
@@ -137,6 +157,18 @@ export default function Integrations() {
                         {connected ? "Desconectar" : "Conectar"}
                       </button>
                     </div>
+
+                    {s.key === "johndrop" && connected && (
+                      <button
+                        onClick={importFromJohnDrop}
+                        disabled={importing}
+                        data-testid="import-johndrop-button"
+                        className="w-full mt-2 border-2 border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-4 py-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-colors disabled:opacity-60 shadow-[2px_2px_0px_#002FA7] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]"
+                      >
+                        <Download size={12} />
+                        {importing ? "Importando catálogo..." : "Importar catálogo → Meus Produtos"}
+                      </button>
+                    )}
                   </div>
                 );
               })}

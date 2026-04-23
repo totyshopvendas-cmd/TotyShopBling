@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import Layout, { PageHeader } from "../components/Layout";
 import { api } from "../lib/api";
 import { toast } from "sonner";
-import { Sparkles, Save, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, Image as ImageIcon } from "lucide-react";
+import { Sparkles, Save, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, Image as ImageIcon, Calculator } from "lucide-react";
 
 const TABS = [
   { id: "geral", label: "Geral", color: "#0A0A0A" },
@@ -42,6 +42,10 @@ export default function ProductEditor() {
   const [tab, setTab] = useState("geral");
   const [aiModel, setAiModel] = useState("claude");
   const [aiBusy, setAiBusy] = useState({ title: false, bullets: false, description: false });
+  const [packaging, setPackaging] = useState(2.0);
+  const [campaigns, setCampaigns] = useState(5.0);
+  const [pricingResult, setPricingResult] = useState(null);
+  const [pricingBusy, setPricingBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -156,6 +160,27 @@ export default function ProductEditor() {
     } catch (_e) { toast.error("Falha na IA"); }
     finally { setAiBusy((s) => ({ ...s, description: false })); }
   };
+
+  const calcPrice = async () => {
+    setPricingBusy(true);
+    try {
+      const { data } = await api.post("/pricing/calculate", {
+        cost: product.cost || 0,
+        packaging,
+        campaigns,
+      });
+      setPricingResult(data);
+    } catch (_e) { toast.error("Falha ao calcular"); }
+    finally { setPricingBusy(false); }
+  };
+
+  const applyPrice = () => {
+    if (!pricingResult) return;
+    update({ price: pricingResult.selling_price });
+    toast.success("Preço aplicado ao produto");
+  };
+
+  const money = (v) => `R$ ${Number(v).toFixed(2).replace(".", ",")}`;
 
   return (
     <Layout>
@@ -345,6 +370,74 @@ export default function ProductEditor() {
                 <div className="mt-3 text-[10px] text-neutral-500 leading-relaxed">
                   Regra: fundo branco/transparente, alta resolução.
                 </div>
+              </div>
+
+              {/* Pricing widget */}
+              <div className="border-2 border-[#002FA7] p-4 bg-white" data-testid="pricing-widget">
+                <div className="flex items-center gap-2 mb-3">
+                  <Calculator size={14} className="text-[#002FA7]" />
+                  <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#002FA7]">// calculadora blindada</span>
+                </div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="font-mono text-[10px] uppercase tracking-wider text-neutral-500 block mb-1">Embalagem (R$)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={packaging}
+                      onChange={(e) => setPackaging(parseFloat(e.target.value) || 0)}
+                      data-testid="pricing-packaging"
+                      className="w-full bg-[#F7F7F7] border-b-2 border-transparent focus:border-[#002FA7] focus:outline-none px-3 py-1.5 text-xs font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-mono text-[10px] uppercase tracking-wider text-neutral-500 block mb-1">Campanhas (R$)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={campaigns}
+                      onChange={(e) => setCampaigns(parseFloat(e.target.value) || 0)}
+                      data-testid="pricing-campaigns"
+                      className="w-full bg-[#F7F7F7] border-b-2 border-transparent focus:border-[#002FA7] focus:outline-none px-3 py-1.5 text-xs font-mono"
+                    />
+                  </div>
+                  <button
+                    onClick={calcPrice}
+                    disabled={pricingBusy}
+                    data-testid="pricing-calc-button"
+                    className="w-full bg-[#002FA7] hover:bg-[#00227A] text-white px-3 py-2 text-[10px] font-mono uppercase tracking-wider transition-colors disabled:opacity-60"
+                  >
+                    {pricingBusy ? "Calculando..." : "Calcular preço sugerido"}
+                  </button>
+                </div>
+
+                {pricingResult && (
+                  <div className="mt-4 pt-4 border-t border-[#E5E5E5]" data-testid="pricing-result">
+                    <div className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">preço sugerido</div>
+                    <div className="font-heading text-3xl tracking-tighter font-medium text-[#002FA7]">
+                      {money(pricingResult.selling_price)}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 mt-2 text-[10px] font-mono">
+                      <div>
+                        <div className="text-neutral-500">Lucro</div>
+                        <div className="text-[#008A00]">{money(pricingResult.breakdown.net_profit)}</div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-500">Margem</div>
+                        <div className="text-[#008A00]">
+                          {((pricingResult.breakdown.net_profit / pricingResult.selling_price) * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={applyPrice}
+                      data-testid="apply-price-button"
+                      className="w-full mt-3 border border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider transition-colors"
+                    >
+                      Aplicar como preço de venda
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>

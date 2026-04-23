@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import Products from "./pages/Products";
 import ProductEditor from "./pages/ProductEditor";
 import Integrations from "./pages/Integrations";
+import Pricing from "./pages/Pricing";
 
 function AppRouter() {
   const location = useLocation();
@@ -24,6 +25,7 @@ function AppRouter() {
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
       <Route path="/products/:id/edit" element={<ProtectedRoute><ProductEditor /></ProtectedRoute>} />
+      <Route path="/pricing" element={<ProtectedRoute><Pricing /></ProtectedRoute>} />
       <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
