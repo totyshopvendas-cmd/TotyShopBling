@@ -386,8 +386,12 @@ async def update_product(
         raise HTTPException(status_code=404, detail="Produto não encontrado")
     update_doc = data.model_dump()
     update_doc["updated_at"] = _now()
+    # Edits invalidate any previous sync - go back to pending until user re-syncs
     if update_doc.get("stock_johndrop", 0) <= 0:
         update_doc["sync_status"] = "out_of_stock"
+    else:
+        update_doc["sync_status"] = "pending"
+    update_doc["sync_message"] = "Alterações pendentes - re-sincronize com Bling"
     await db.products.update_one(
         {"id": product_id, "owner_id": user.user_id},
         {"$set": update_doc},
