@@ -1,7 +1,7 @@
 import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { LayoutDashboard, Package, RefreshCw, Plug, LogOut, Calculator } from "lucide-react";
+import { LayoutDashboard, Package, RefreshCw, Plug, LogOut, Calculator, Download } from "lucide-react";
 
 const NavItem = ({ to, icon: Icon, children, testId }) => (
   <NavLink
@@ -50,6 +50,9 @@ export default function Layout({ children }) {
           </NavItem>
           <NavItem to="/products" icon={Package} testId="sidebar-nav-products">
             Produtos
+          </NavItem>
+          <NavItem to="/johndrop-catalog" icon={Download} testId="sidebar-nav-jd-catalog">
+            Catálogo JohnDrop
           </NavItem>
           <NavItem to="/pricing" icon={Calculator} testId="sidebar-nav-pricing">
             Calculadora

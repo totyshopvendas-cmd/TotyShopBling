@@ -439,3 +439,262 @@ def test_ai_auth_gated(session):
     r = session.post(f"{API}/ai/generate-title",
                      json={"product_code": "x", "raw_name": "x", "model": "claude"}, timeout=15)
     assert r.status_code == 401
+
+
+# ============================================================
+# Iteration 3: REAL JohnDrop integration
+# /api/johndrop/connect, /disconnect, /catalog, /import-real
+# ============================================================
+
+JD_EMAIL = "totyshopvendas@gmail.com"
+JD_PASSWORD = "1593572864To@@##"
+
+EMAIL_JD = f"jd+{uuid.uuid4().hex[:6]}@blingdrop.com"
+
+
+@pytest.fixture(scope="module")
+def auth_jd(session):
+    r = session.post(f"{API}/auth/register",
+                     json={"email": EMAIL_JD, "password": PASSWORD, "name": NAME}, timeout=30)
+    assert r.status_code == 200, r.text
+    return {"token": r.json()["token"], "user_id": r.json()["user"]["user_id"]}
+
+
+@pytest.fixture(scope="module")
+def headers_jd(auth_jd):
+    return {"Authorization": f"Bearer {auth_jd['token']}", "Content-Type": "application/json"}
+
+
+# ---------- connect / disconnect ----------
+def test_jd_catalog_before_connect_returns_400(session, headers_jd):
+    r = session.get(f"{API}/johndrop/catalog?page=1", headers=headers_jd, timeout=30)
+    assert r.status_code == 400
+    assert "johndrop" in r.json()["detail"].lower() or "conecte" in r.json()["detail"].lower()
+
+
+def test_jd_connect_wrong_password_401(session, headers_jd):
+    r = session.post(f"{API}/johndrop/connect", headers=headers_jd,
+                     json={"email": JD_EMAIL, "password": "wrong-password-xxx"}, timeout=60)
+    # 401 = auth failed; 502 would indicate network (infra) problem
+    if r.status_code == 502:
+        pytest.skip(f"JohnDrop unreachable (infra): {r.text[:200]}")
+    assert r.status_code == 401, r.text
+
+
+def test_jd_connect_success(session, headers_jd):
+    r = session.post(f"{API}/johndrop/connect", headers=headers_jd,
+                     json={"email": JD_EMAIL, "password": JD_PASSWORD}, timeout=60)
+    if r.status_code == 502:
+        pytest.skip(f"JohnDrop unreachable (infra): {r.text[:200]}")
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["connected"] is True
+    assert j["email"] == JD_EMAIL
+
+
+def test_jd_integrations_status_has_email(session, headers_jd):
+    r = session.get(f"{API}/integrations/status", headers=headers_jd, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["johndrop"]["connected"] is True
+    assert j["johndrop"].get("email") == JD_EMAIL
+
+
+def test_jd_credential_encrypted_in_db(auth_jd):
+    """Verify password_enc is stored non-plaintext in db.johndrop_credentials."""
+    from pymongo import MongoClient
+    mc = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mc[os.environ.get("DB_NAME", "test_database")]
+    doc = db.johndrop_credentials.find_one({"user_id": auth_jd["user_id"]})
+    assert doc is not None, "Credential doc not found"
+    assert doc["email"] == JD_EMAIL
+    assert "password_enc" in doc
+    assert doc["password_enc"] != JD_PASSWORD
+    assert JD_PASSWORD not in doc["password_enc"]
+    # Fernet tokens start with 'gAAAAA'
+    assert doc["password_enc"].startswith("gAAAAA")
+
+
+# ---------- catalog ----------
+@pytest.fixture(scope="module")
+def catalog_page1(session, headers_jd):
+    r = session.get(f"{API}/johndrop/catalog?page=1", headers=headers_jd, timeout=60)
+    if r.status_code == 502:
+        pytest.skip(f"JohnDrop unreachable (infra): {r.text[:200]}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_jd_catalog_page1_shape(catalog_page1):
+    d = catalog_page1
+    assert len(d["items"]) == 40
+    assert len(d["categories"]) == 31
+    assert d["max_page"] >= 15
+    assert d["current_page"] == 1
+
+
+def test_jd_catalog_item_fields(catalog_page1):
+    for it in catalog_page1["items"]:
+        assert isinstance(it["jd_id"], str) and it["jd_id"].isdigit()
+        assert isinstance(it["raw_title"], str) and len(it["raw_title"]) > 0
+        assert isinstance(it["clean_title"], str)
+        assert "product_code" in it
+        assert it["image"] is None or it["image"].startswith("https://app.jonhdrop.com.br/")
+        assert isinstance(it["price"], (int, float))
+        assert isinstance(it["stock"], int)
+        assert isinstance(it["already_imported"], bool)
+        assert "seo_title_suggestion" in it
+        seo = it["seo_title_suggestion"]
+        assert len(seo) <= 60, f"SEO title too long ({len(seo)}): {seo}"
+        if it["product_code"]:
+            assert seo.endswith(it["product_code"]), f"SEO must end with product_code: {seo}"
+        assert isinstance(it["price_suggestion"], (int, float))
+        if it["price"] > 0:
+            assert it["price_suggestion"] > it["price"], \
+                f"price_suggestion {it['price_suggestion']} must be > price {it['price']}"
+
+
+def test_jd_catalog_page2_different(session, headers_jd, catalog_page1):
+    r = session.get(f"{API}/johndrop/catalog?page=2", headers=headers_jd, timeout=60)
+    if r.status_code == 502:
+        pytest.skip(f"JohnDrop unreachable (infra): {r.text[:200]}")
+    assert r.status_code == 200, r.text
+    d2 = r.json()
+    assert d2["current_page"] == 2
+    ids1 = {it["jd_id"] for it in catalog_page1["items"]}
+    ids2 = {it["jd_id"] for it in d2["items"]}
+    assert ids1 != ids2
+    assert len(ids1 & ids2) < len(ids1)  # mostly different
+
+
+# ---------- import-real ----------
+@pytest.fixture(scope="module")
+def imported_ids(session, headers_jd, catalog_page1):
+    # Take 2 items that aren't already imported
+    candidates = [it["jd_id"] for it in catalog_page1["items"] if not it["already_imported"]][:2]
+    assert len(candidates) >= 1, "No un-imported candidates on page 1"
+    r = session.post(f"{API}/johndrop/import-real", headers=headers_jd,
+                     json={"jd_ids": candidates, "use_ai_description": False}, timeout=120)
+    if r.status_code == 502:
+        pytest.skip(f"JohnDrop unreachable (infra): {r.text[:200]}")
+    assert r.status_code == 200, r.text
+    return {"ids": candidates, "resp": r.json()}
+
+
+def test_jd_import_real_creates_products(session, headers_jd, imported_ids):
+    j = imported_ids["resp"]
+    assert j["created"] == len(imported_ids["ids"])
+    assert j["skipped"] == 0
+    # Verify jd_id linkage via direct DB query (GET /products strips jd_id via response_model)
+    from pymongo import MongoClient
+    mc = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mc[os.environ.get("DB_NAME", "test_database")]
+    for jid in imported_ids["ids"]:
+        doc = db.products.find_one({"jd_id": jid})
+        assert doc is not None, f"Product with jd_id={jid} not persisted"
+        assert len(doc["title"]) <= 60
+        assert doc["product_code"] and doc["product_code"] in doc["title"]
+        assert doc["price"] > doc["cost"]  # blindada price > cost
+        assert doc["sync_status"] in ("pending", "out_of_stock")
+        # SKU format JD-<product_code>
+        assert doc["sku"].startswith("JD-")
+
+
+def test_jd_import_real_idempotent(session, headers_jd, imported_ids):
+    r = session.post(f"{API}/johndrop/import-real", headers=headers_jd,
+                     json={"jd_ids": imported_ids["ids"], "use_ai_description": False}, timeout=120)
+    if r.status_code == 502:
+        pytest.skip(f"JohnDrop unreachable: {r.text[:200]}")
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["created"] == 0
+    assert j["skipped"] == len(imported_ids["ids"])
+
+
+def test_jd_catalog_already_imported_flag(session, headers_jd, imported_ids):
+    r = session.get(f"{API}/johndrop/catalog?page=1", headers=headers_jd, timeout=60)
+    if r.status_code == 502:
+        pytest.skip("JohnDrop unreachable")
+    items = r.json()["items"]
+    for jid in imported_ids["ids"]:
+        hit = next((it for it in items if it["jd_id"] == jid), None)
+        if hit is not None:
+            assert hit["already_imported"] is True, f"{jid} should be already_imported"
+
+
+def test_jd_import_real_empty_list_400(session, headers_jd):
+    r = session.post(f"{API}/johndrop/import-real", headers=headers_jd,
+                     json={"jd_ids": [], "use_ai_description": False}, timeout=30)
+    assert r.status_code == 400
+
+
+def test_jd_import_real_with_ai_description(session, headers_jd, catalog_page1):
+    # Pick a fresh un-imported item
+    candidates = [it["jd_id"] for it in catalog_page1["items"] if not it["already_imported"]]
+    # skip ones already used by imported_ids fixture
+    # Grab one that is *still* un-imported at the time of call
+    r_cat = session.get(f"{API}/johndrop/catalog?page=1", headers=headers_jd, timeout=60)
+    if r_cat.status_code == 502:
+        pytest.skip("JohnDrop unreachable")
+    fresh = [it["jd_id"] for it in r_cat.json()["items"] if not it["already_imported"]]
+    if not fresh:
+        pytest.skip("No fresh un-imported items left on page 1")
+    target = [fresh[0]]
+    r = session.post(f"{API}/johndrop/import-real", headers=headers_jd,
+                     json={"jd_ids": target, "use_ai_description": True, "ai_model": "claude"},
+                     timeout=180)
+    if r.status_code == 502:
+        pytest.skip("JohnDrop unreachable")
+    assert r.status_code == 200, r.text
+    j = r.json()
+    if j["created"] == 0:
+        pytest.skip("Product already imported in a parallel test")
+    # Fetch the created product via DB (response_model strips jd_id)
+    from pymongo import MongoClient
+    mc = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mc[os.environ.get("DB_NAME", "test_database")]
+    doc = db.products.find_one({"jd_id": target[0]})
+    assert doc is not None
+    assert isinstance(doc.get("description"), str)
+    assert len(doc["description"]) >= 100, f"AI description too short ({len(doc['description'])}): {doc['description'][:120]}"
+
+
+# ---------- disconnect ----------
+def test_jd_disconnect_removes_credentials(session, headers_jd, auth_jd):
+    r = session.post(f"{API}/johndrop/disconnect", headers=headers_jd, timeout=15)
+    assert r.status_code == 200
+    assert r.json()["disconnected"] is True
+    # credential doc deleted
+    from pymongo import MongoClient
+    mc = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mc[os.environ.get("DB_NAME", "test_database")]
+    assert db.johndrop_credentials.find_one({"user_id": auth_jd["user_id"]}) is None
+    # catalog now fails with 400
+    r2 = session.get(f"{API}/johndrop/catalog?page=1", headers=headers_jd, timeout=30)
+    assert r2.status_code == 400
+
+
+# ---------- apply_seo_format regression (via legacy /johndrop/import) ----------
+def test_apply_seo_preserves_code_after_truncation(session):
+    """Via unit-level import: raw '(KA-R128) ... Kapbom KA-R128' must end with ' KA-R128', max 60."""
+    import sys
+    sys.path.insert(0, "/app/backend")
+    from server import apply_seo_format
+    raw = "Pendrive 128GB Unidade Flash TIPO-C para USB 3.0 de Alta Velocidade Kapbom KA-R128"
+    out = apply_seo_format(raw, brand="Kapbom", ean=None, product_code="KA-R128")
+    assert len(out) <= 60, f"Length {len(out)}: {out!r}"
+    assert out.endswith(" KA-R128"), f"Must end with ' KA-R128': {out!r}"
+    # Brand removed
+    assert "Kapbom" not in out
+    # Code appears exactly once at the end
+    assert out.count("KA-R128") == 1
+
+
+def test_apply_seo_short_title_unchanged_except_code_suffix(session):
+    import sys
+    sys.path.insert(0, "/app/backend")
+    from server import apply_seo_format
+    out = apply_seo_format("Creme Facial Hidratante 50g", brand=None, ean=None, product_code="JD001")
+    assert out.endswith(" JD001")
+    assert len(out) <= 60
+    assert "Creme Facial Hidratante" in out

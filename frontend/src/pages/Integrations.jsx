@@ -40,7 +40,9 @@ export default function Integrations() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [discordHook, setDiscordHook] = useState("");
-  const [importing, setImporting] = useState(false);
+  const [jdEmail, setJdEmail] = useState("");
+  const [jdPassword, setJdPassword] = useState("");
+  const [jdConnecting, setJdConnecting] = useState(false);
   const navigate = useNavigate();
 
   const load = async () => {
@@ -48,6 +50,7 @@ export default function Integrations() {
       const { data } = await api.get("/integrations/status");
       setStatus(data);
       setDiscordHook(data?.discord?.webhook || "");
+      if (data?.johndrop?.email) setJdEmail(data.johndrop.email);
     } catch (_e) { toast.error("Falha ao carregar"); }
     finally { setLoading(false); }
   };
@@ -62,21 +65,32 @@ export default function Integrations() {
     } catch (_e) { toast.error("Falha"); }
   };
 
-  const importFromJohnDrop = async () => {
-    setImporting(true);
-    try {
-      const { data } = await api.post("/johndrop/import", { apply_seo: true });
-      if (data.created === 0) {
-        toast.info(`Catálogo já sincronizado (${data.skipped} produtos já importados)`);
-      } else {
-        toast.success(`${data.created} produtos importados com formato SEO aplicado`);
-        setTimeout(() => navigate("/products"), 1500);
-      }
-    } catch (err) {
-      toast.error(err?.response?.data?.detail || "Falha na importação");
-    } finally {
-      setImporting(false);
+  const connectJohnDrop = async () => {
+    if (!jdEmail || !jdPassword) {
+      toast.error("Email e senha obrigatórios");
+      return;
     }
+    setJdConnecting(true);
+    try {
+      await api.post("/johndrop/connect", { email: jdEmail, password: jdPassword });
+      toast.success("JohnDrop conectada com sucesso!");
+      setJdPassword("");
+      await load();
+      setTimeout(() => navigate("/johndrop-catalog"), 1200);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Falha ao conectar");
+    } finally {
+      setJdConnecting(false);
+    }
+  };
+
+  const disconnectJohnDrop = async () => {
+    try {
+      await api.post("/johndrop/disconnect");
+      toast.success("JohnDrop desconectada");
+      setJdPassword("");
+      await load();
+    } catch (_e) { toast.error("Falha"); }
   };
 
   return (
@@ -149,25 +163,75 @@ export default function Integrations() {
                     )}
 
                     <div className="flex gap-2 mt-4">
-                      <button
-                        onClick={() => toggle(s.key, !connected, s.key === "discord" ? discordHook : undefined)}
-                        data-testid={`toggle-${s.key}`}
-                        className={`flex-1 px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors ${connected ? "border border-[#E5E5E5] hover:border-[#E60000] hover:text-[#E60000]" : "bg-[#002FA7] hover:bg-[#00227A] text-white"}`}
-                      >
-                        {connected ? "Desconectar" : "Conectar"}
-                      </button>
+                      {s.key === "johndrop" ? (
+                        connected ? (
+                          <button
+                            onClick={disconnectJohnDrop}
+                            data-testid="toggle-johndrop"
+                            className="flex-1 px-4 py-2 text-xs font-mono uppercase tracking-wider border border-[#E5E5E5] hover:border-[#E60000] hover:text-[#E60000] transition-colors"
+                          >
+                            Desconectar
+                          </button>
+                        ) : null
+                      ) : (
+                        <button
+                          onClick={() => toggle(s.key, !connected, s.key === "discord" ? discordHook : undefined)}
+                          data-testid={`toggle-${s.key}`}
+                          className={`flex-1 px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors ${connected ? "border border-[#E5E5E5] hover:border-[#E60000] hover:text-[#E60000]" : "bg-[#002FA7] hover:bg-[#00227A] text-white"}`}
+                        >
+                          {connected ? "Desconectar" : "Conectar"}
+                        </button>
+                      )}
                     </div>
 
+                    {/* JohnDrop real login form */}
+                    {s.key === "johndrop" && !connected && (
+                      <div className="mt-3 space-y-2 border-t border-[#E5E5E5] pt-3">
+                        <div className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">// credenciais jonhdrop</div>
+                        <input
+                          type="email"
+                          placeholder="email@jonhdrop.com.br"
+                          value={jdEmail}
+                          onChange={(e) => setJdEmail(e.target.value)}
+                          data-testid="jd-email-input"
+                          className="w-full bg-[#F7F7F7] border-b-2 border-transparent focus:border-[#002FA7] focus:outline-none px-3 py-2 text-sm font-mono"
+                        />
+                        <input
+                          type="password"
+                          placeholder="senha"
+                          value={jdPassword}
+                          onChange={(e) => setJdPassword(e.target.value)}
+                          data-testid="jd-password-input"
+                          className="w-full bg-[#F7F7F7] border-b-2 border-transparent focus:border-[#002FA7] focus:outline-none px-3 py-2 text-sm font-mono"
+                        />
+                        <button
+                          onClick={connectJohnDrop}
+                          disabled={jdConnecting}
+                          data-testid="jd-connect-button"
+                          className="w-full bg-[#002FA7] hover:bg-[#00227A] text-white px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors disabled:opacity-60"
+                        >
+                          {jdConnecting ? "Testando login..." : "Conectar JohnDrop"}
+                        </button>
+                        <div className="text-[10px] text-neutral-500 leading-relaxed">
+                          Credenciais criptografadas no servidor. Usadas apenas para acessar seu catálogo e importar produtos.
+                        </div>
+                      </div>
+                    )}
+
                     {s.key === "johndrop" && connected && (
-                      <button
-                        onClick={importFromJohnDrop}
-                        disabled={importing}
-                        data-testid="import-johndrop-button"
-                        className="w-full mt-2 border-2 border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-4 py-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-colors disabled:opacity-60 shadow-[2px_2px_0px_#002FA7] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]"
-                      >
-                        <Download size={12} />
-                        {importing ? "Importando catálogo..." : "Importar catálogo → Meus Produtos"}
-                      </button>
+                      <>
+                        <div className="mt-3 font-mono text-[10px] text-neutral-500">
+                          conectado como: <span className="text-[#0A0A0A]">{st.email}</span>
+                        </div>
+                        <button
+                          onClick={() => navigate("/johndrop-catalog")}
+                          data-testid="goto-jd-catalog"
+                          className="w-full mt-2 border-2 border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-4 py-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-colors shadow-[2px_2px_0px_#002FA7] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]"
+                        >
+                          <Download size={12} />
+                          Ver catálogo sem integração →
+                        </button>
+                      </>
                     )}
                   </div>
                 );

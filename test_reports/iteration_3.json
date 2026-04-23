@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 3 backend regression + REAL JohnDrop integration. 52/52 pytest cases pass against live https://app.jonhdrop.com.br. Verified: POST /api/johndrop/connect (happy path with real creds totyshopvendas@gmail.com + 401 on wrong password), credential encryption in db.johndrop_credentials.password_enc (Fernet token 'gAAAAA...' prefix, plaintext absent), /api/integrations/status exposes johndrop.email, GET /api/johndrop/catalog (400 before connect, 40 items/31 cats/max_page>=15 on page=1, different items on page=2, all item fields incl. jd_id/raw_title/clean_title/product_code/image on jonhdrop.com.br/price/stock/seo_title_suggestion<=60 ending with product_code/price_suggestion>price/already_imported), POST /api/johndrop/import-real (creates products with SEO title + calculated price>cost + jd_id linkage persisted in Mongo, idempotent skip on second call, 400 on empty jd_ids, use_ai_description=true triggers AI -> description >=100 chars), /api/johndrop/disconnect removes credential doc and subsequent /catalog returns 400. apply_seo_format regression passed: '(KA-R128) ... Kapbom KA-R128' -> 59 chars ending with ' KA-R128' (code preserved after truncation, brand removed, code appears exactly once). Full iteration-1 + iteration-2 regression intact (auth, products CRUD, sync, dashboard, integrations toggle, AI claude+gpt, legacy /johndrop/import mock flow, pricing calculator).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/products", "issue": "jd_id field is persisted in Mongo but stripped from API response by response_model=List[Product] (jd_id is not declared on the Product Pydantic model). Frontend cannot show JohnDrop linkage without a DB round-trip. Suggestion: add optional jd_id: Optional[str] = None to the Product model."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Minor) Expose jd_id on Product Pydantic model so GET /api/products returns the JohnDrop linkage; frontend catalog page will likely want this to render 'already imported' badges without re-querying /catalog.",
+    "(Tech debt carry-over) server.py is now 1329 lines - split into routers (auth, products, integrations, ai, pricing, johndrop) as flagged in iteration 2."
+  ],
+  "critical_code_review_comments": [
+    "johndrop_client._parse_catalog_html relies on brittle HTML regexes (card div/class names, price-tag class, upload path prefix). Any Laravel template update on jonhdrop.com.br breaks catalog parsing silently (items=[] with 200 OK). Add a monitor/alert: if fetch_catalog_page returns items=[] but html length>5KB, log a WARNING.",
+    "POST /api/johndrop/import-real iterates pages 1..min(max_page,30) for every request and stops early when all target ids are found, but worst case still makes 30 HTTP calls to JohnDrop. Request timeout is 120s in tests; may exceed gateway timeouts under load. Consider caching recent catalog pages per user (TTL 60-120s) or requiring clients to pass jd_ids with their discovered page numbers.",
+    "decrypt_secret will raise an uncaught cryptography.fernet.InvalidToken if JWT_SECRET rotates, causing /catalog and /import-real to 500. Wrap in try/except -> 401 'reautentique sua JohnDrop' so users can /connect again.",
+    "_get_johndrop_client returns a JohnDropClient that must be used as async context manager; the helper name implies ready-to-use - consider renaming or returning a factory to avoid misuse.",
+    "/api/johndrop/disconnect does not verify the user was actually connected (returns {disconnected: true} even if no doc existed). Harmless but could mask client-side bugs; return 404 or {disconnected: false, already: true} when nothing was deleted.",
+    "JohnDropClient has no retry on 429/5xx from JohnDrop; under flaky network a single transient error surfaces as 502. httpx has transport.Retry support - low effort to add.",
+    "apply_seo_format uses re.escape(brand) but still removes brand as a substring (no word boundary). If raw_title = 'Creme' and brand='Cre', it would delete 'Cre' from the middle. Iteration-2 comment flagged this; still open.",
+    "johndrop_catalog endpoint re-runs apply_seo_format and price_suggestion on every request (no caching). For a logged-in user clicking through 17 pages this is fine, but consider moving to client-side or per-response headers.",
+    "Test credential storage: /api/johndrop/connect logs no audit event. For a GDPR/LGPD-sensitive scraper that holds user e-commerce passwords, adding created_at is good; add last_used_at and an audit log collection.",
+    "johndrop_connect catches generic Exception -> 502 'Falha de rede', which swallows programming bugs (e.g. KeyError). Narrow to httpx.HTTPError / RequestError."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (52/52)", "frontend": "not tested (per request)"},
+  "test_credentials": "Auto-generated test+<uuid>@blingdrop.com / Test1234! (app users). Real JohnDrop: totyshopvendas@gmail.com / 1593572864To@@## - verified live.",
+  "seed_data_creation": "Each test module creates isolated app users via /api/auth/register (3 iteration-1/2 users + 1 iteration-3 JD user). Iteration-3 imports 2-3 real products from JohnDrop page 1 into the JD user's Mongo. No seed data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All 52 tests in /app/backend/tests/backend_test.py pass (approx 34s). The 3 new endpoint groups (connect/disconnect, catalog, import-real) depend on live https://app.jonhdrop.com.br - if that site is down or its HTML template changes, catalog/import-real tests will fail with 502 (our tests pytest.skip on 502 for the infra-fragile ones, but fail hard on the core shape). imported_ids fixture picks the first 2 un-imported items on page 1; if another process imports those products into the same JD user, fixture may find fewer candidates. jd_id is stored in Mongo but NOT returned by GET /api/products (response_model strips it) - we verify via pymongo directly. Use MONGO_URL+DB_NAME from backend/.env.",
+  "rca of the issue": "N/A - no production bugs found. Two initial test failures (test_jd_import_real_creates_products, test_jd_import_real_with_ai_description) were my own test-code defect: I queried GET /api/products for jd_id, but Product Pydantic response_model strips it. Fixed by verifying persistence via direct Mongo query. Flagged the underlying API shape as a Minor issue for main agent."
+}

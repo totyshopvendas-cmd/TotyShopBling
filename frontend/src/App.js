@@ -11,6 +11,7 @@ import Products from "./pages/Products";
 import ProductEditor from "./pages/ProductEditor";
 import Integrations from "./pages/Integrations";
 import Pricing from "./pages/Pricing";
+import JohnDropCatalog from "./pages/JohnDropCatalog";
 
 function AppRouter() {
   const location = useLocation();
@@ -26,6 +27,7 @@ function AppRouter() {
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
       <Route path="/products/:id/edit" element={<ProtectedRoute><ProductEditor /></ProtectedRoute>} />
       <Route path="/pricing" element={<ProtectedRoute><Pricing /></ProtectedRoute>} />
+      <Route path="/johndrop-catalog" element={<ProtectedRoute><JohnDropCatalog /></ProtectedRoute>} />
       <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

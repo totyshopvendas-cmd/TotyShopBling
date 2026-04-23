@@ -16,6 +16,13 @@ from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+from johndrop_client import (
+    JohnDropClient,
+    JohnDropAuthError,
+    encrypt_secret,
+    decrypt_secret,
+)
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -754,17 +761,22 @@ SEED_PRODUCTS = [
 def apply_seo_format(raw_title: str, brand: Optional[str], ean: Optional[str], product_code: str) -> str:
     """Rule-based SEO formatter for JohnDrop imports.
     - Remove brand & EAN from title
+    - Strip product_code wherever it appears (so we control position)
     - Collapse whitespace
-    - Ensure product_code at the end
-    - Hard truncate to 60 chars
+    - Always append product_code at the end
+    - Hard truncate to 60 chars (keeping code intact)
     """
     t = raw_title or ""
     if brand:
         t = re.sub(re.escape(brand), "", t, flags=re.IGNORECASE)
     if ean:
         t = t.replace(ean, "")
-    t = re.sub(r"\s+", " ", t).strip(" -|,.")
-    if product_code and product_code.lower() not in t.lower():
+    # Strip product_code anywhere (we'll re-append at end)
+    if product_code:
+        t = re.sub(re.escape(product_code), "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s+", " ", t).strip(" -|,.()")
+
+    if product_code:
         suffix = f" {product_code}"
         max_base = 60 - len(suffix)
         if len(t) > max_base:
@@ -1005,6 +1017,251 @@ async def ai_generate_description(data: AIGenerateDescriptionIn, user: UserPubli
     user_text = f"Título: {data.title}\n\nBullets:\n{bullets_text}"
     desc = await _llm_generate(system, user_text, data.model)
     return {"description": desc}
+
+
+# ============ JohnDrop Real Integration ============
+class JohnDropConnectIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+@api_router.post("/johndrop/connect")
+async def johndrop_connect(data: JohnDropConnectIn, user: UserPublic = Depends(get_current_user)):
+    """Testa login na JohnDrop e salva credenciais criptografadas."""
+    try:
+        async with JohnDropClient(data.email, data.password) as c:
+            ok = await c.login()
+    except JohnDropAuthError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Falha de rede: {e}")
+    if not ok:
+        raise HTTPException(status_code=401, detail="Email ou senha inválidos na JohnDrop")
+
+    enc_password = encrypt_secret(data.password, JWT_SECRET)
+    await db.johndrop_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "user_id": user.user_id,
+            "email": data.email,
+            "password_enc": enc_password,
+            "connected_at": _now(),
+        }},
+        upsert=True,
+    )
+    # Mark integration
+    await db.integrations.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "user_id": user.user_id,
+            "johndrop.connected": True,
+            "johndrop.token_valid": True,
+            "johndrop.last_sync": _now(),
+            "johndrop.email": data.email,
+        }},
+        upsert=True,
+    )
+    return {"connected": True, "email": data.email}
+
+
+@api_router.post("/johndrop/disconnect")
+async def johndrop_disconnect(user: UserPublic = Depends(get_current_user)):
+    await db.johndrop_credentials.delete_one({"user_id": user.user_id})
+    await db.integrations.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "johndrop.connected": False,
+            "johndrop.token_valid": False,
+            "johndrop.email": None,
+        }},
+    )
+    return {"disconnected": True}
+
+
+async def _get_johndrop_client(user_id: str) -> JohnDropClient:
+    cred = await db.johndrop_credentials.find_one({"user_id": user_id}, {"_id": 0})
+    if not cred:
+        raise HTTPException(status_code=400, detail="Conecte sua conta JohnDrop primeiro")
+    password = decrypt_secret(cred["password_enc"], JWT_SECRET)
+    return JohnDropClient(cred["email"], password)
+
+
+@api_router.get("/johndrop/catalog")
+async def johndrop_catalog(
+    page: int = 1,
+    integration_filter: str = "without_integration",
+    category_id: str = "",
+    name: str = "",
+    user: UserPublic = Depends(get_current_user),
+):
+    """Busca catálogo real da JohnDrop (página por vez, paginado)."""
+    client = await _get_johndrop_client(user.user_id)
+    async with client as c:
+        try:
+            data = await c.fetch_catalog_page(
+                page=page,
+                integration_filter=integration_filter,
+                category_id=category_id,
+                name=name,
+            )
+        except JohnDropAuthError as e:
+            raise HTTPException(status_code=401, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Falha ao buscar catálogo: {e}")
+
+    # Flag which items are already imported into user's products
+    jd_ids = [it["jd_id"] for it in data["items"]]
+    existing = await db.products.find(
+        {"owner_id": user.user_id, "jd_id": {"$in": jd_ids}},
+        {"_id": 0, "jd_id": 1},
+    ).to_list(1000)
+    existing_ids = {e["jd_id"] for e in existing}
+
+    for it in data["items"]:
+        it["already_imported"] = it["jd_id"] in existing_ids
+        # Pre-compute SEO title suggestion
+        it["seo_title_suggestion"] = apply_seo_format(
+            it["clean_title"],
+            brand=None,
+            ean=None,
+            product_code=it["product_code"] or "",
+        )
+        # Pre-compute calculated price (cost = JD price, default packaging/campaigns)
+        total_cost = it["price"] + 2.0 + 5.0
+        it["price_suggestion"] = round((total_cost + FIXED_FEE) / (1 - COMMISSION_PCT - MIN_MARGIN_PCT), 2)
+
+    return data
+
+
+class JohnDropImportRealIn(BaseModel):
+    jd_ids: List[str]
+    use_ai_description: bool = False
+    ai_model: Literal["claude", "gpt"] = "claude"
+
+
+@api_router.post("/johndrop/import-real")
+async def johndrop_import_real(data: JohnDropImportRealIn, user: UserPublic = Depends(get_current_user)):
+    """Importa produtos REAIS da JohnDrop (por jd_id) para Meus Produtos,
+    aplicando formato SEO + preço calculado + descrição IA opcional."""
+    if not data.jd_ids:
+        raise HTTPException(status_code=400, detail="Nenhum produto selecionado")
+
+    client = await _get_johndrop_client(user.user_id)
+    # Need to iterate pages until we find all requested IDs
+    target = set(data.jd_ids)
+    found: dict[str, dict] = {}
+    created = 0
+    skipped = 0
+    errors: list[str] = []
+
+    async with client as c:
+        try:
+            await c.ensure_logged_in()
+        except JohnDropAuthError as e:
+            raise HTTPException(status_code=401, detail=str(e))
+
+        page = 1
+        max_page = 1
+        while target and page <= max_page and page <= 30:  # safety cap
+            try:
+                data_page = await c.fetch_catalog_page(page=page)
+            except Exception as e:
+                errors.append(f"Page {page}: {e}")
+                break
+            max_page = data_page["max_page"]
+            for it in data_page["items"]:
+                if it["jd_id"] in target:
+                    found[it["jd_id"]] = it
+                    target.discard(it["jd_id"])
+            page += 1
+
+    # Create products
+    imported_items = []
+    for jd_id, it in found.items():
+        existing = await db.products.find_one(
+            {"owner_id": user.user_id, "jd_id": jd_id}, {"_id": 0}
+        )
+        if existing:
+            skipped += 1
+            continue
+        product_code = it["product_code"] or f"JD{jd_id}"
+        seo_title = apply_seo_format(it["clean_title"], brand=None, ean=None, product_code=product_code)
+        # price calculator
+        total_cost = it["price"] + 2.0 + 5.0
+        suggested_price = round((total_cost + FIXED_FEE) / (1 - COMMISSION_PCT - MIN_MARGIN_PCT), 2)
+        # description via AI (optional)
+        description = ""
+        if data.use_ai_description:
+            try:
+                description = await _llm_generate(
+                    system_prompt=(
+                        "Você é um copywriter de e-commerce. Gere uma descrição em português brasileiro "
+                        "entre 400 e 700 caracteres, em 2 parágrafos, sem emojis, destacando benefícios e público-alvo."
+                    ),
+                    user_text=f"Produto: {seo_title}\nCódigo: {product_code}",
+                    model_choice=data.ai_model,
+                )
+            except Exception:
+                description = it["clean_title"]
+        else:
+            description = it["clean_title"]
+
+        pid = f"prod_{uuid.uuid4().hex[:12]}"
+        now = _now()
+        doc = {
+            "id": pid,
+            "owner_id": user.user_id,
+            "jd_id": jd_id,
+            "sku": f"JD-{product_code}" if product_code else f"JD-{jd_id}",
+            "product_code": product_code,
+            "title": seo_title,
+            "brand": "",
+            "ean": "",
+            "description": description,
+            "price": suggested_price,
+            "cost": it["price"],
+            "stock_johndrop": it["stock"],
+            "stock_bling": 0,
+            "images": [it["image"]] if it["image"] else [],
+            "amazon": {
+                "enabled": True,
+                "category": None,
+                "bullet_points": ["", "", "", "", "", ""],
+            },
+            "shopee": {
+                "enabled": True,
+                "category": None,
+                "variation_color": it.get("variation_color"),
+                "variation_size": it.get("variation_size"),
+                "weight_kg": None,
+                "length_cm": None,
+                "width_cm": None,
+                "height_cm": None,
+            },
+            "kwai": {"enabled": False},
+            "sync_status": "pending" if it["stock"] > 0 else "out_of_stock",
+            "sync_message": "Importado da JohnDrop (API real) - título SEO + preço blindado aplicados",
+            "created_at": now,
+            "updated_at": now,
+        }
+        await db.products.insert_one(doc)
+        created += 1
+        imported_items.append({
+            "jd_id": jd_id,
+            "product_code": product_code,
+            "raw_title": it["raw_title"],
+            "seo_title": seo_title,
+            "suggested_price": suggested_price,
+        })
+
+    not_found = list(target)
+    return {
+        "created": created,
+        "skipped": skipped,
+        "not_found": not_found,
+        "errors": errors,
+        "items": imported_items,
+    }
 
 
 # ============ Pricing Calculator (Calculadora Blindada) ============
