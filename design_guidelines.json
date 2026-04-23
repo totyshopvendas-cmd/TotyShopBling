@@ -1,0 +1,135 @@
+{
+  "theme_archetype": {
+    "theme": "light",
+    "archetype": "Archetype 4 (Swiss & High-Contrast)",
+    "vibe": "Objective, rigid, functional, high-density logistics.",
+    "rationale": "For an e-commerce dashboard managing inventory and cross-platform synchronization (Bling to JohnDrop), the UI must prioritize clarity and authority. The 'E1 Twist' applies a 'Neo-Brutalist Utility' approach: 95% of the UI is monochrome, and color is strictly functional to guide actions (e.g., sync status, AI generation)."
+  },
+  "brand_colors": {
+    "background": {
+      "primary": "#FFFFFF",
+      "secondary": "#F7F7F7",
+      "tertiary": "#EBEBEB"
+    },
+    "text": {
+      "primary": "#0A0A0A",
+      "secondary": "#525252",
+      "disabled": "#A3A3A3"
+    },
+    "accents": {
+      "primary": "#002FA7",
+      "primary_hover": "#00227A",
+      "ai_sparkle": "#FF4500",
+      "shopee_orange": "#EE4D2D",
+      "amazon_yellow": "#FF9900",
+      "kwai_red": "#FF3B30",
+      "success": "#008A00",
+      "error": "#E60000",
+      "warning": "#FFB800"
+    },
+    "borders": {
+      "default": "#E5E5E5",
+      "focus": "#002FA7"
+    }
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Work Sans, sans-serif",
+      "body": "IBM Plex Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "hierarchy": {
+      "h1": "text-4xl tracking-tighter font-medium",
+      "h2": "text-2xl tracking-tight font-medium",
+      "h3": "text-xl tracking-tight font-medium",
+      "h4": "text-lg tracking-tight font-medium",
+      "body": "text-sm leading-relaxed",
+      "mono_label": "font-mono text-xs tracking-wider uppercase text-secondary"
+    },
+    "rules": [
+      "Headings must use tight letter spacing (tracking-tight or tracking-tighter).",
+      "Technical data like SKUs, Product Codes, and EANs must use the Mono font.",
+      "Overlines and table headers must be uppercase + tiny + wide spacing."
+    ]
+  },
+  "spacing_layout": {
+    "grid_strategy": "MODE B: THE 'CONTROL ROOM' GRID",
+    "spacing_scale": "Tailwind standard (p-2, p-4, p-6). Containers with borders must have internal padding.",
+    "dashboard_grid": {
+      "columns": "grid-cols-1 md:grid-cols-4 lg:grid-cols-12",
+      "gap": "gap-4",
+      "span_logic": "Summary widgets: col-span-3. Main chart/table: col-span-9."
+    },
+    "alignment_rules": "Left-align all paragraphs, labels, and tabular data. Optical alignment for icons within buttons.",
+    "borders": "Expose the skeleton. Use grid borders ('Technical' look). Use sharp edges (rounded-none or rounded-sm [2px]). No soft rounded corners."
+  },
+  "components": {
+    "strategy": "Shadcn UI heavily customized to remove the 'Vercel-look'. Flat backgrounds, sharp corners, 1px solid borders.",
+    "cards": {
+      "style": "Flat background (bg-white), 1px subtle border (border-[#E5E5E5]), rounded-none, NO shadow by default.",
+      "hover": "Slight lift (-translate-y-px), border color darkens to #A3A3A3, sharp crisp shadow (shadow-[2px_2px_0px_#0A0A0A])."
+    },
+    "buttons": {
+      "primary": "bg-primary text-white rounded-none font-medium hover:bg-primary_hover transition-colors",
+      "secondary": "bg-transparent border border-default text-primary rounded-none hover:border-primary hover:text-primary transition-colors",
+      "ai_action": "bg-white border-2 border-ai_sparkle text-ai_sparkle rounded-none hover:bg-ai_sparkle hover:text-white transition-all shadow-[2px_2px_0px_#FF4500]"
+    },
+    "inputs_and_forms": {
+      "style": "bg-secondary border-b-2 border-transparent hover:border-default focus:border-primary rounded-none focus:ring-0 px-4 py-2 transition-colors",
+      "seo_title_input": "Include a strict character counter visually attached to the input field. Turns red when > 60 characters."
+    },
+    "tabs": {
+      "style": "Marketplace tabs (Amazon, Shopee, Kwai) must use sharp borders, with the active tab having a 2px top border matching the marketplace brand color."
+    },
+    "tables": {
+      "style": "Dense data grids. border-collapse. Row hover state: bg-tertiary. Use sticky headers for large inventory lists."
+    }
+  },
+  "motion_interactions": {
+    "hover_states": "All interactive elements must explicitly change text and background color on hover.",
+    "focus_states": "High contrast 2px ring or solid border color change.",
+    "transitions": "Use specific properties (e.g., transition: border-color 0.2s ease, background-color 0.2s ease). No 'transition-all' for grids."
+  },
+  "visual_enhancers": {
+    "icons": "Phosphor Icons (@phosphor-icons/react) - Duotone weight for marketing/empty states, Regular weight for dense dashboard tables.",
+    "ai_generation_loader": "ASCII art or retro-terminal cursor blinking effect to signal 'AI working' rather than a generic spinner.",
+    "surface_styles": {
+      "header": "Solid background (bg-white) with a hard 1px bottom border.",
+      "status_indicators": "Small solid circles (6px) next to Mono text for Sync Status (e.g., Green for Synced, Red for Error)."
+    }
+  },
+  "image_urls": {
+    "login_background": {
+      "url": "https://images.pexels.com/photos/3137072/pexels-photo-3137072.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Black and white abstract geometric architectural structure. Use as the right-side split screen background for the Login page."
+    },
+    "empty_state_inventory": {
+      "url": "https://images.unsplash.com/photo-1584472666879-7d92db132958?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwzfHxlY29tbWVyY2UlMjBsb2dpc3RpY3MlMjBkYXNoYm9hcmR8ZW58MHx8fHwxNzc2OTAzNTYyfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Logistics/calendar visual. Use at low opacity for empty states in the product or sync tabs."
+    },
+    "product_mockup_1": {
+      "url": "https://images.pexels.com/photos/19080517/pexels-photo-19080517.png?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Cosmetic skincare tube on white background. Use to populate the product mock data in the catalog/editor."
+    },
+    "product_mockup_2": {
+      "url": "https://images.unsplash.com/photo-1664455340023-214c33a9d0bd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTJ8MHwxfHNlYXJjaHwyfHxicmF6aWxpYW4lMjBlY29tbWVyY2UlMjBwcm9kdWN0c3xlbnwwfHx8fDE3NzY5MDM1NjJ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Toy shopping cart mockup. Use for product list mockup."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Install specific font dependencies via Google Fonts (Work Sans, IBM Plex Sans, JetBrains Mono).",
+    "Install @phosphor-icons/react for icons.",
+    "Build the dashboard layout with pure HTML/Tailwind classes leveraging CSS Grid (grid-cols-12 for main content).",
+    "For the Product SEO Editor: Implement Shadcn Tabs for the marketplace views (Amazon, Shopee, Kwai). Each tab must dynamically show required fields. Amazon tab requires exactly 6 bullet point inputs.",
+    "Implement a strict visual character counter for the SEO title (Max 60 chars) - it should turn Red and display a warning icon when exceeded. Do NOT include EAN/Brand fields in the title generator logic.",
+    "Auth screen must use a split-layout: Left side stark white minimal login form, Right side uses the 'login_background' image with a grayscale filter.",
+    "All components must strictly adhere to the 'rounded-none' or 'rounded-sm' rules. Remove all default Shadcn rounding (rounded-md/lg).",
+    "Do not use transparent headers. The top nav must have bg-white and border-b.",
+    "Use data-testid attributes on all buttons, tabs, and form inputs."
+  ],
+  "data_testid_conventions": {
+    "login": ["login-email-input", "login-password-input", "login-submit-button", "google-login-button"],
+    "dashboard": ["sidebar-nav-inventory", "sidebar-nav-sync", "sync-status-indicator"],
+    "product_editor": ["seo-title-input", "title-char-counter", "bullet-point-input-1", "ai-generate-button", "tab-amazon", "tab-shopee", "tab-kwai", "save-product-button"]
+  }
+}
