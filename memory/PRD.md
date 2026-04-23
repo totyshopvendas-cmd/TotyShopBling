@@ -39,6 +39,17 @@ User requested a system integrating **Bling (ERP)** with **JohnDrop (dropshippin
 ### Testing
 - 23/23 backend tests pass (auth, CRUD, sync validation, dashboard, integrations, AI real calls)
 
+## Iteration 2 (Feb 23, 2026)
+### Added
+- **Auto-import JohnDrop → Meus Produtos** (`POST /api/johndrop/import`): guarded by integration status, imports 8-product mock catalog, applies `apply_seo_format()` helper (strip brand, strip EAN, append product_code, truncate 60 chars). Idempotent via SKU check.
+- **Calculadora Blindada** (`POST /api/pricing/calculate`): fixed 18% commission, R$6 fee, 20% margin (matches calcblindada-krrwemcx.manus.space). Formula: `P = (cost+packaging+campaigns+6) / 0.62`.
+- Frontend: standalone `/pricing` page + "Calculadora" sidebar nav + pricing widget inside ProductEditor Geral tab with "Aplicar como preço de venda" button.
+- Integrations page: "Importar catálogo → Meus Produtos" button appears when JohnDrop is connected.
+- SEED_PRODUCTS expanded from 3 to 8 (skincare, eletrônicos, casa, pet, fitness, iluminação, beleza, escritório), with intentionally "raw" titles (brand + EAN) to demo the SEO auto-format on import.
+
+### Testing iteration 2
+- 36/36 backend tests pass. Zero critical or minor issues.
+
 ## Prioritized Backlog
 ### P0 (post-MVP, for next phase)
 - Real Bling API OAuth integration (token management, auto-refresh)
