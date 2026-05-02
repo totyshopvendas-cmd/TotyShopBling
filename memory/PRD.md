@@ -50,6 +50,26 @@ User requested a system integrating **Bling (ERP)** with **JohnDrop (dropshippin
 ### Testing iteration 2
 - 36/36 backend tests pass. Zero critical or minor issues.
 
+## Iteration 3 (Feb 23, 2026) - REAL JohnDrop Integration
+### Added
+- **Session-based scraper** for JohnDrop (no public REST API exists). New module `/app/backend/johndrop_client.py` does Laravel CSRF login and parses HTML catalog pages with regex.
+- **Encrypted credential storage**: passwords encrypted with Fernet (key derived from JWT_SECRET via SHA-256), stored in `johndrop_credentials` collection.
+- **New endpoints**:
+  - `POST /api/johndrop/connect` - tests login + saves encrypted credentials
+  - `POST /api/johndrop/disconnect` - removes credentials
+  - `GET /api/johndrop/catalog?page=N&category_id=&name=&integration_filter=without_integration` - returns real products with SEO title suggestion + price_suggestion + already_imported flag
+  - `POST /api/johndrop/import-real` - imports selected products by jd_id with SEO format + calculated price + optional AI description
+- **Frontend**:
+  - New page `/johndrop-catalog` lists real products (paginated 17 pages × 40 items), shows raw vs SEO title, calculated blindada price, margin %, image, stock. Multi-select + bulk import.
+  - Integrations page now has real JohnDrop login form (email + password) instead of fake toggle. Encrypted credentials shown as connected status.
+  - "Catálogo JohnDrop" link in sidebar.
+- **apply_seo_format fix**: now always strips product_code and re-appends at end so 60-char truncation preserves the code.
+- **Product model**: added optional `jd_id` field exposed in API response for traceability.
+- **Error hardening**: `decrypt_secret` failure → 401 (not 500); narrowed `connect` exception catch to `httpx.HTTPError`.
+
+### Testing iteration 3
+- 52/52 backend tests pass against live `https://app.jonhdrop.com.br`. Real catalog: 17 páginas, ~680 produtos, 31 categorias.
+
 ## Prioritized Backlog
 ### P0 (post-MVP, for next phase)
 - Real Bling API OAuth integration (token management, auto-refresh)

@@ -103,6 +103,7 @@ class ProductIn(BaseModel):
 
 class Product(ProductIn):
     id: str
+    jd_id: Optional[str] = None
     sync_status: Literal["synced", "pending", "error", "out_of_stock"] = "pending"
     sync_message: Optional[str] = None
     created_at: datetime
@@ -1033,8 +1034,8 @@ async def johndrop_connect(data: JohnDropConnectIn, user: UserPublic = Depends(g
             ok = await c.login()
     except JohnDropAuthError as e:
         raise HTTPException(status_code=401, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Falha de rede: {e}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Falha de rede com a JohnDrop: {e}")
     if not ok:
         raise HTTPException(status_code=401, detail="Email ou senha inválidos na JohnDrop")
 
@@ -1082,7 +1083,10 @@ async def _get_johndrop_client(user_id: str) -> JohnDropClient:
     cred = await db.johndrop_credentials.find_one({"user_id": user_id}, {"_id": 0})
     if not cred:
         raise HTTPException(status_code=400, detail="Conecte sua conta JohnDrop primeiro")
-    password = decrypt_secret(cred["password_enc"], JWT_SECRET)
+    try:
+        password = decrypt_secret(cred["password_enc"], JWT_SECRET)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Credenciais corrompidas - reconecte sua JohnDrop")
     return JohnDropClient(cred["email"], password)
 
 
