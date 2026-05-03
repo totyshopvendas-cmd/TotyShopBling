@@ -70,6 +70,23 @@ User requested a system integrating **Bling (ERP)** with **JohnDrop (dropshippin
 ### Testing iteration 3
 - 52/52 backend tests pass against live `https://app.jonhdrop.com.br`. Real catalog: 17 páginas, ~680 produtos, 31 categorias.
 
+## Iteration 4 (Feb 23, 2026) - Push-back to JohnDrop + UX Reorg
+### Added
+- **POST /api/johndrop/push/{product_id}** - Aplica o produto atualizado (título SEO + descrição + preço) DIRETAMENTE no painel da JohnDrop via `POST /dashboard/product/storev2/{jd_id}`. Preserva todos os 28 campos do formulário (SKU, EAN, marca, categoria, NCM, dimensões, 5 canais de integração TotyShop-Bling) — só sobrescreve `name`, `description`, `sale_value`. A JohnDrop então repassa automaticamente ao Bling via ToyShop-Bling.
+- `JohnDropClient.fetch_product_form(jd_id)` + `push_product(jd_id, patch)` — mirror form + patch overrides.
+- **Frontend**: Botão laranja "Aplicar na JohnDrop → Bling" no ProductEditor (aparece só se jd_id existir) com confirmação antes do push.
+- **UX Reorganização de navegação**: espelha o fluxo real da JohnDrop:
+  - Sidebar "Produtos" → agora aponta para catálogo JohnDrop (sem cadastro)
+  - Sidebar "Meus Produtos" → novo nome para produtos importados
+- **Error hardening**: jd_id exposto no Product model; decrypt_secret falha → 401; httpx.HTTPError específico.
+
+### Fluxo completo (agora end-to-end)
+1. Conectar JohnDrop em Integrações (email+senha) — credenciais criptografadas Fernet
+2. "Produtos" → ver 680 produtos sem cadastro, filtrar, selecionar lote
+3. "Importar selecionados" → aparece em Meus Produtos com SEO + preço blindado
+4. Abrir produto em Meus Produtos → ajustar se quiser, gerar descrição IA
+5. Botão "Aplicar na JohnDrop → Bling" → POST direto pro painel da JohnDrop → ToyShop-Bling empurra pro Bling automaticamente
+
 ## Prioritized Backlog
 ### P0 (post-MVP, for next phase)
 - Real Bling API OAuth integration (token management, auto-refresh)

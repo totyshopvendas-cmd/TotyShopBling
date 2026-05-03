@@ -100,6 +100,57 @@ def _parse_max_page(html: str) -> int:
     return max(pages) if pages else 1
 
 
+_CSRF_INPUT_RE = re.compile(r'<input[^>]*name="_token"[^>]*value="([^"]*)"')
+_FORM_INPUT_RE = re.compile(
+    r'<input\b(?=[^>]*\bname="([^"]+)")(?=[^>]*\bvalue="([^"]*)")[^>]*>',
+)
+_TEXTAREA_RE = re.compile(
+    r'<textarea[^>]*\bname="([^"]+)"[^>]*>(.*?)</textarea>',
+    re.DOTALL,
+)
+_SELECT_RE = re.compile(
+    r'<select[^>]*\bname="([^"]+)"[^>]*>(.*?)</select>',
+    re.DOTALL,
+)
+_SELECTED_OPTION_RE = re.compile(
+    r'<option[^>]*\bselected[^>]*\bvalue="([^"]*)"',
+)
+
+
+def _parse_form_fields(html: str) -> dict:
+    """Extract every pre-filled form field from the product create/edit page
+    so we can re-submit without losing data."""
+    fields: dict = {}
+    # CSRF first
+    m = _CSRF_INPUT_RE.search(html)
+    if m:
+        fields["_token"] = m.group(1)
+
+    # Regular inputs with value=""
+    for name, value in _FORM_INPUT_RE.findall(html):
+        if name in ("uploader[]",):
+            continue
+        if name.endswith("[]"):
+            fields.setdefault(name, []).append(value)
+        else:
+            # Skip re-setting _token
+            if name == "_token":
+                continue
+            fields[name] = value
+
+    # Textareas
+    for name, body in _TEXTAREA_RE.findall(html):
+        fields[name] = body.strip()
+
+    # Selects: pick the "selected" option value
+    for name, body in _SELECT_RE.findall(html):
+        m = _SELECTED_OPTION_RE.search(body)
+        if m:
+            fields[name] = m.group(1)
+
+    return fields
+
+
 # ---------- Client ----------
 class JohnDropAuthError(Exception):
     pass
@@ -182,4 +233,46 @@ class JohnDropClient:
             "categories": categories,
             "max_page": max_page,
             "current_page": page,
+        }
+
+    async def fetch_product_form(self, jd_id: str) -> dict:
+        """Fetch the edit page and return all pre-filled form fields."""
+        await self.ensure_logged_in()
+        r = await self._client.get(f"/dashboard/product/create/{jd_id}")
+        if "/login" in str(r.url):
+            raise JohnDropAuthError("Sessão expirada")
+        return _parse_form_fields(r.text)
+
+    async def push_product(self, jd_id: str, patch: dict) -> dict:
+        """Re-submit the product form with overrides. Preserves all other fields.
+        patch keys are the override values (e.g. {'name': 'Novo Titulo', 'description': '...', 'sale_value': '105,63'})."""
+        fields = await self.fetch_product_form(jd_id)
+        # Merge: list fields stay, scalar fields get overridden
+        for k, v in patch.items():
+            fields[k] = v
+
+        # httpx data param doesn't send list values the way Laravel expects - we need tuples
+        # Convert list fields into repeated key tuples
+        form_tuples: list[tuple] = []
+        for k, v in fields.items():
+            if isinstance(v, list):
+                for item in v:
+                    form_tuples.append((k, item))
+            else:
+                form_tuples.append((k, "" if v is None else str(v)))
+
+        r = await self._client.post(
+            f"/dashboard/product/storev2/{jd_id}",
+            data=form_tuples,
+            headers={
+                "X-CSRF-TOKEN": fields.get("_token", ""),
+                "Referer": f"{BASE_URL}/dashboard/product/create/{jd_id}",
+            },
+        )
+        final = str(r.url)
+        success = r.status_code in (200, 302) and "/login" not in final
+        return {
+            "success": success,
+            "status_code": r.status_code,
+            "final_url": final,
         }

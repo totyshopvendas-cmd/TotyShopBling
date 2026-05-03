@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import Layout, { PageHeader } from "../components/Layout";
 import { api } from "../lib/api";
 import { toast } from "sonner";
-import { Sparkles, Save, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, Image as ImageIcon, Calculator } from "lucide-react";
+import { Sparkles, Save, RefreshCw, ArrowLeft, AlertCircle, CheckCircle2, Image as ImageIcon, Calculator, Send } from "lucide-react";
 
 const TABS = [
   { id: "geral", label: "Geral", color: "#0A0A0A" },
@@ -181,6 +181,28 @@ export default function ProductEditor() {
   };
 
   const money = (v) => `R$ ${Number(v).toFixed(2).replace(".", ",")}`;
+
+  const pushToJohnDrop = async () => {
+    if (!product.jd_id) {
+      toast.error("Este produto não está vinculado à JohnDrop (sem jd_id)");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Aplicar na JohnDrop?\n\nTítulo: ${product.title}\nPreço: ${money(product.price)}\n\nIsso vai ATUALIZAR o produto diretamente no seu painel da JohnDrop (jd_id=${product.jd_id}). A JohnDrop repassará ao Bling via ToyShop-Bling. Continuar?`
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    try {
+      // Save local first
+      await save();
+      const { data } = await api.post(`/johndrop/push/${product.id}`);
+      toast.success(`Aplicado na JohnDrop! Título "${data.title_sent.slice(0, 40)}..." enviado.`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Falha ao aplicar na JohnDrop");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <Layout>
@@ -516,6 +538,21 @@ export default function ProductEditor() {
               <textarea
                 value={product.kwai?.tech_specs || ""}
                 onChange={(e) => updateKwai({ tech_specs: e.target.value })}
+                rows={4}
+                data-testid="kwai-specs"
+                className="w-full bg-[#F7F7F7] border-b-2 border-transparent hover:border-[#E5E5E5] focus:border-[#FF3B30] focus:outline-none px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="text-[11px] text-neutral-500">
+              Kwai Shop exige campos técnicos específicos conforme a categoria. Aprovação via API.
+            </div>
+          </div>
+        )}
+      </div>
+    </Layout>
+  );
+}
+ })}
                 rows={4}
                 data-testid="kwai-specs"
                 className="w-full bg-[#F7F7F7] border-b-2 border-transparent hover:border-[#E5E5E5] focus:border-[#FF3B30] focus:outline-none px-3 py-2 text-sm"

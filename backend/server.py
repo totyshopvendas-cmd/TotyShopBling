@@ -1268,6 +1268,77 @@ async def johndrop_import_real(data: JohnDropImportRealIn, user: UserPublic = De
     }
 
 
+class JohnDropPushIn(BaseModel):
+    # Allow overriding specific fields without fetching from DB
+    override_title: Optional[str] = None
+    override_description: Optional[str] = None
+    override_sale_value: Optional[float] = None
+
+
+@api_router.post("/johndrop/push/{product_id}")
+async def johndrop_push(
+    product_id: str,
+    data: JohnDropPushIn = JohnDropPushIn(),
+    user: UserPublic = Depends(get_current_user),
+):
+    """Aplica título SEO + descrição + preço blindado DIRETO na JohnDrop,
+    atualizando o cadastro lá via POST /dashboard/product/storev2/{jd_id}.
+    A JohnDrop então repassa ao Bling via ToyShop-Bling como você já faz."""
+    p = await db.products.find_one(
+        {"id": product_id, "owner_id": user.user_id}, {"_id": 0}
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+    if not p.get("jd_id"):
+        raise HTTPException(status_code=400, detail="Produto não vinculado à JohnDrop (sem jd_id)")
+
+    title = data.override_title or p["title"]
+    description = data.override_description if data.override_description is not None else (p.get("description") or p["title"])
+    sale_value = data.override_sale_value if data.override_sale_value is not None else p["price"]
+
+    # Format sale_value for Brazilian Laravel form (e.g. "105,63")
+    sale_value_str = f"{float(sale_value):.2f}".replace(".", ",")
+
+    client = await _get_johndrop_client(user.user_id)
+    async with client as c:
+        try:
+            result = await c.push_product(
+                p["jd_id"],
+                {
+                    "name": title,
+                    "description": description,
+                    "sale_value": sale_value_str,
+                },
+            )
+        except JohnDropAuthError as e:
+            raise HTTPException(status_code=401, detail=str(e))
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=f"Falha de rede: {e}")
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=502,
+            detail=f"JohnDrop respondeu com status {result['status_code']}",
+        )
+
+    # Update local record - mark as pushed + status synced
+    await db.products.update_one(
+        {"id": product_id, "owner_id": user.user_id},
+        {"$set": {
+            "sync_status": "synced",
+            "sync_message": f"Aplicado na JohnDrop em {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')} - ToyShop-Bling ativa",
+            "last_pushed_at": _now(),
+            "updated_at": _now(),
+        }},
+    )
+    return {
+        "pushed": True,
+        "jd_id": p["jd_id"],
+        "title_sent": title,
+        "sale_value_sent": sale_value_str,
+    }
+
+
 # ============ Pricing Calculator (Calculadora Blindada) ============
 # Fixed constants mirroring https://calcblindada-krrwemcx.manus.space/
 COMMISSION_PCT = 0.18
