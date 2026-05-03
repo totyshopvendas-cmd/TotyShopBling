@@ -1893,8 +1893,10 @@ async def _ai_enrich_product(
     existing_categories: list[dict],
     custom_fields: list[dict],
     ai_model: str,
+    johndrop_description: str = "",
 ) -> dict:
-    """Usa IA pra sugerir: descrição principal + bullets, categoria, NCM, dimensões + campos customizados aplicáveis."""
+    """Usa IA pra sugerir: descrição principal + bullets, categoria, NCM, dimensões + campos customizados aplicáveis.
+    Se johndrop_description for fornecida, ela serve como contexto principal para a IA."""
     cat_names = [c.get("descricao", "") for c in existing_categories]
     cat_list = "\n".join(f"- {n}" for n in cat_names[:60])
 
@@ -1940,6 +1942,10 @@ async def _ai_enrich_product(
     user_text = (
         f"Produto: {title}\n"
         f"Código/SKU: {code}\n\n"
+        f"DESCRIÇÃO ORIGINAL DO FORNECEDOR (JohnDrop) — use como CONTEXTO PRINCIPAL "
+        f"para extrair características, materiais, especificações, público-alvo e benefícios. "
+        f"Reescreva profissionalmente, sem copiar literalmente:\n"
+        f"{johndrop_description if johndrop_description else '(descrição original não disponível — use o título e seu conhecimento do produto)'}\n\n"
         f"Categorias existentes no Bling:\n{cat_list or '(nenhuma)'}\n\n"
         f"Campos customizados disponíveis no Bling:\n{cf_list}\n\n"
         "Analise e retorne o JSON."
@@ -1962,11 +1968,19 @@ async def _ai_enrich_product(
 @api_router.post("/bling/enrich")
 async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_current_user)):
     """Analisa cada produto do Bling com IA e preenche: descrição, NCM, categoria (cria se não existir),
-    dimensões, fornecedor. NUNCA mexe em título, SKU ou preço."""
+    dimensões, fornecedor. NUNCA mexe em título, SKU ou preço.
+    Para enriquecimento usa a descrição original da JohnDrop (via jd_id mapeado pelo SKU)."""
     token = await _get_bling_access_token(user.user_id)
     enriched = 0
     failed: list[dict] = []
     results: list[dict] = []
+
+    # Optional JohnDrop client (best-effort — só é usado se conectado)
+    jd_client_factory = None
+    try:
+        jd_client_factory = await _get_johndrop_client(user.user_id)
+    except HTTPException:
+        jd_client_factory = None
 
     async with BlingClient(token) as c:
         # Load once
@@ -1982,94 +1996,136 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
             custom_fields = []
         cf_by_name = {cf.get("nome", "").lower().strip(): cf for cf in custom_fields}
 
-        for bling_id in data.bling_product_ids:
+        # Open a single JohnDrop session for all products (if available)
+        jd_session = None
+        if jd_client_factory:
             try:
-                product = await c.get_product(bling_id)
-                current_title = product.get("nome", "")
-                current_code = product.get("codigo", "")
+                jd_session = await jd_client_factory.__aenter__()
+            except Exception:
+                jd_session = None
 
-                ai = await _ai_enrich_product(
-                    current_title, current_code, categories, custom_fields, data.ai_model
-                )
+        try:
+            for bling_id in data.bling_product_ids:
+                try:
+                    product = await c.get_product(bling_id)
+                    current_title = product.get("nome", "")
+                    current_code = product.get("codigo", "")
 
-                # Resolve category
-                cat_name = (ai.get("categoria_sugerida") or "").strip()
-                cat_id = None
-                if cat_name:
-                    existing = cat_by_name.get(cat_name.lower())
-                    if existing:
-                        cat_id = existing.get("id")
-                    elif data.auto_create_categories:
-                        new_cat = await c.create_category(cat_name)
-                        cat_id = new_cat.get("id")
-                        cat_by_name[cat_name.lower()] = new_cat
-                        categories.append(new_cat)
+                    # Try to fetch original JohnDrop description for context
+                    jd_description = ""
+                    if jd_session and current_code:
+                        # Look up jd_id by SKU in our products collection
+                        prod_doc = await db.products.find_one(
+                            {"owner_id": user.user_id, "sku": current_code},
+                            {"_id": 0, "jd_id": 1},
+                        )
+                        jd_id = prod_doc.get("jd_id") if prod_doc else None
+                        if jd_id:
+                            try:
+                                jd_form = await jd_session.fetch_product_form(str(jd_id))
+                                # JohnDrop uses 'description' textarea (rich HTML)
+                                raw_desc = jd_form.get("description", "") or ""
+                                # Strip HTML tags for cleaner AI input but keep line breaks
+                                jd_description = re.sub(r"<br\s*/?>", "\n", raw_desc, flags=re.I)
+                                jd_description = re.sub(r"</p>", "\n\n", jd_description, flags=re.I)
+                                jd_description = re.sub(r"<[^>]+>", "", jd_description)
+                                jd_description = re.sub(r"\n{3,}", "\n\n", jd_description).strip()
+                                if len(jd_description) > 4000:
+                                    jd_description = jd_description[:4000]
+                            except Exception:
+                                jd_description = ""
 
-                # Map AI's field-name dict -> real custom field IDs
-                campos_customizados_payload = []
-                ai_campos = ai.get("campos_customizados") or {}
-                if isinstance(ai_campos, dict):
-                    for field_name, value in ai_campos.items():
-                        cf_def = cf_by_name.get(str(field_name).lower().strip())
-                        if cf_def and value not in (None, ""):
-                            campos_customizados_payload.append({
-                                "idCampoCustomizado": cf_def.get("id"),
-                                "valor": str(value),
-                            })
+                    ai = await _ai_enrich_product(
+                        current_title, current_code, categories, custom_fields, data.ai_model,
+                        johndrop_description=jd_description,
+                    )
 
-                # Build update payload - PRESERVES title, code, price
-                payload = {
-                    "nome": product.get("nome"),  # preserve
-                    "codigo": product.get("codigo"),  # preserve
-                    "preco": product.get("preco"),  # preserve
-                    "tipo": product.get("tipo", "P"),
-                    "situacao": product.get("situacao", "A"),
-                    "formato": product.get("formato", "S"),
-                    "descricaoCurta": ai.get("descricao_curta") or product.get("descricaoCurta"),
-                    "descricaoComplementar": ai.get("descricao_complementar") or product.get("descricaoComplementar"),
-                    "unidade": ai.get("unidade") or product.get("unidade", "Un"),
-                    "pesoLiquido": float(ai.get("peso_kg") or 0) or product.get("pesoLiquido", 0),
-                    "pesoBruto": float(ai.get("peso_kg") or 0) or product.get("pesoBruto", 0),
-                    "dimensoes": {
-                        "largura": float(ai.get("largura_cm") or 0) or (product.get("dimensoes") or {}).get("largura", 0),
-                        "altura": float(ai.get("altura_cm") or 0) or (product.get("dimensoes") or {}).get("altura", 0),
-                        "profundidade": float(ai.get("comprimento_cm") or 0) or (product.get("dimensoes") or {}).get("profundidade", 0),
-                        "unidadeMedida": 1,  # cm
-                    },
-                    "tributacao": {
-                        **(product.get("tributacao") or {}),
-                        "ncm": str(ai.get("ncm") or product.get("tributacao", {}).get("ncm", "")).replace(".", "").replace("-", ""),
-                    },
-                }
-                if cat_id:
-                    payload["categoria"] = {"id": cat_id}
-                if campos_customizados_payload:
-                    payload["camposCustomizados"] = campos_customizados_payload
+                    # Resolve category
+                    cat_name = (ai.get("categoria_sugerida") or "").strip()
+                    cat_id = None
+                    if cat_name:
+                        existing = cat_by_name.get(cat_name.lower())
+                        if existing:
+                            cat_id = existing.get("id")
+                        elif data.auto_create_categories:
+                            new_cat = await c.create_category(cat_name)
+                            cat_id = new_cat.get("id")
+                            cat_by_name[cat_name.lower()] = new_cat
+                            categories.append(new_cat)
 
-                await c.update_product(bling_id, payload)
+                    # Map AI's field-name dict -> real custom field IDs
+                    campos_customizados_payload = []
+                    ai_campos = ai.get("campos_customizados") or {}
+                    if isinstance(ai_campos, dict):
+                        for field_name, value in ai_campos.items():
+                            cf_def = cf_by_name.get(str(field_name).lower().strip())
+                            if cf_def and value not in (None, ""):
+                                campos_customizados_payload.append({
+                                    "idCampoCustomizado": cf_def.get("id"),
+                                    "valor": str(value),
+                                })
 
-                await db.bling_enrich_log.insert_one({
-                    "user_id": user.user_id,
-                    "bling_product_id": bling_id,
-                    "bling_code": current_code,
-                    "bling_title": current_title,
-                    "category_assigned": cat_name,
-                    "ncm": ai.get("ncm"),
-                    "ai_model": data.ai_model,
-                    "enriched_at": _now(),
-                })
-                enriched += 1
-                results.append({
-                    "bling_product_id": bling_id,
-                    "code": current_code,
-                    "title": current_title,
-                    "category": cat_name,
-                    "ncm": ai.get("ncm"),
-                    "peso_kg": ai.get("peso_kg"),
-                    "campos_customizados_count": len(campos_customizados_payload),
-                })
-            except Exception as e:
-                failed.append({"bling_product_id": bling_id, "reason": str(e)})
+                    # Build update payload - PRESERVES title, code, price
+                    payload = {
+                        "nome": product.get("nome"),  # preserve
+                        "codigo": product.get("codigo"),  # preserve
+                        "preco": product.get("preco"),  # preserve
+                        "tipo": product.get("tipo", "P"),
+                        "situacao": product.get("situacao", "A"),
+                        "formato": product.get("formato", "S"),
+                        "descricaoCurta": ai.get("descricao_curta") or product.get("descricaoCurta"),
+                        "descricaoComplementar": ai.get("descricao_complementar") or product.get("descricaoComplementar"),
+                        "unidade": ai.get("unidade") or product.get("unidade", "Un"),
+                        "pesoLiquido": float(ai.get("peso_kg") or 0) or product.get("pesoLiquido", 0),
+                        "pesoBruto": float(ai.get("peso_kg") or 0) or product.get("pesoBruto", 0),
+                        "dimensoes": {
+                            "largura": float(ai.get("largura_cm") or 0) or (product.get("dimensoes") or {}).get("largura", 0),
+                            "altura": float(ai.get("altura_cm") or 0) or (product.get("dimensoes") or {}).get("altura", 0),
+                            "profundidade": float(ai.get("comprimento_cm") or 0) or (product.get("dimensoes") or {}).get("profundidade", 0),
+                            "unidadeMedida": 1,  # cm
+                        },
+                        "tributacao": {
+                            **(product.get("tributacao") or {}),
+                            "ncm": str(ai.get("ncm") or product.get("tributacao", {}).get("ncm", "")).replace(".", "").replace("-", ""),
+                        },
+                    }
+                    if cat_id:
+                        payload["categoria"] = {"id": cat_id}
+                    if campos_customizados_payload:
+                        payload["camposCustomizados"] = campos_customizados_payload
+
+                    await c.update_product(bling_id, payload)
+
+                    await db.bling_enrich_log.insert_one({
+                        "user_id": user.user_id,
+                        "bling_product_id": bling_id,
+                        "bling_code": current_code,
+                        "bling_title": current_title,
+                        "category_assigned": cat_name,
+                        "ncm": ai.get("ncm"),
+                        "ai_model": data.ai_model,
+                        "used_johndrop_description": bool(jd_description),
+                        "enriched_at": _now(),
+                    })
+                    enriched += 1
+                    results.append({
+                        "bling_product_id": bling_id,
+                        "code": current_code,
+                        "title": current_title,
+                        "category": cat_name,
+                        "ncm": ai.get("ncm"),
+                        "peso_kg": ai.get("peso_kg"),
+                        "campos_customizados_count": len(campos_customizados_payload),
+                        "used_johndrop_description": bool(jd_description),
+                    })
+                except Exception as e:
+                    failed.append({"bling_product_id": bling_id, "reason": str(e)})
+        finally:
+            if jd_session:
+                try:
+                    await jd_session.__aexit__(None, None, None)
+                except Exception:
+                    pass
 
     return {
         "enriched": enriched,

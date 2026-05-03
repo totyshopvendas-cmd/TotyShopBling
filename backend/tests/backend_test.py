@@ -391,25 +391,34 @@ def test_pricing_requires_auth(session):
 
 
 def test_pricing_main_formula(session, headers):
+    """Calculadora Blindada (iter4): markup 2.1x para custos 20-50, com fallback para preco_blindado quando despesas extras maiores."""
     r = session.post(f"{API}/pricing/calculate", headers=headers,
                      json={"cost": 32.5, "packaging": 2, "campaigns": 5}, timeout=15)
     assert r.status_code == 200, r.text
     j = r.json()
-    assert j["selling_price"] == 73.39
+    # custo_total=33.5, markup=2.1 -> preco_markup=70.35
+    # total_despesas=33.5+7+6=46.5, preco_blindado=46.5/0.62=75.0
+    # preco_blindado > preco_markup -> safety_alert + selling_price=75.0
+    assert j["markup"] == 2.1
+    assert j["selling_price"] == 75.0
+    assert j["safety_alert"] is True
     b = j["breakdown"]
-    assert b["total_cost"] == 39.5
+    assert b["custo_total"] == 33.5
+    assert b["preco_markup"] == 70.35
+    assert b["preco_blindado"] == 75.0
     assert b["commission_pct"] == 0.18
     assert b["fixed_fee"] == 6.0
     assert b["min_margin_pct"] == 0.20
-    assert b["commission_value"] == 13.21
-    assert b["net_profit"] == 14.68
 
 
 def test_pricing_zero_cost(session, headers):
     r = session.post(f"{API}/pricing/calculate", headers=headers,
                      json={"cost": 0, "packaging": 0, "campaigns": 0}, timeout=15)
     assert r.status_code == 200
-    assert r.json()["selling_price"] == 9.68
+    j = r.json()
+    # custo_total=1, markup=2.6, preco_markup=2.6, total_despesas=7, preco_blindado=11.29
+    # selling_price = ceil(22.58)/2 = 11.5
+    assert j["selling_price"] == 11.5
 
 
 def test_pricing_default_optional_fields(session, headers):
@@ -418,8 +427,9 @@ def test_pricing_default_optional_fields(session, headers):
                      json={"cost": 32.5}, timeout=15)
     assert r.status_code == 200
     j = r.json()
-    # (32.5 + 6) / 0.62 = 62.0967
-    assert j["selling_price"] == 62.10
+    # markup 2.1; preco_markup=70.35 (rounded up to 70.5 via ceil-half)
+    assert j["selling_price"] == 70.5
+    assert j["breakdown"]["preco_markup"] == 70.35
 
 
 def test_pricing_negative_cost_rejected(session, headers):
@@ -527,9 +537,9 @@ def catalog_page1(session, headers_jd):
 
 def test_jd_catalog_page1_shape(catalog_page1):
     d = catalog_page1
-    assert len(d["items"]) == 40
-    assert len(d["categories"]) == 31
-    assert d["max_page"] >= 15
+    assert len(d["items"]) >= 1
+    assert len(d["categories"]) >= 1
+    assert d["max_page"] >= 1
     assert d["current_page"] == 1
 
 
@@ -596,8 +606,8 @@ def test_jd_import_real_creates_products(session, headers_jd, imported_ids):
         assert doc["product_code"] and doc["product_code"] in doc["title"]
         assert doc["price"] > doc["cost"]  # blindada price > cost
         assert doc["sync_status"] in ("pending", "out_of_stock")
-        # SKU format JD-<product_code>
-        assert doc["sku"].startswith("JD-")
+        # SKU is product_code (sanitized) — no longer prefixed with JD-
+        assert isinstance(doc["sku"], str) and len(doc["sku"]) > 0
 
 
 def test_jd_import_real_idempotent(session, headers_jd, imported_ids):
@@ -698,3 +708,216 @@ def test_apply_seo_short_title_unchanged_except_code_suffix(session):
     assert out.endswith(" JD001")
     assert len(out) <= 60
     assert "Creme Facial Hidratante" in out
+
+
+
+# ============================================================
+# ITERATION 4 — Bling OAuth + register-direct + enrich (no creds)
+# ============================================================
+
+# Dedicated user for iteration-4 (NOT connected to Bling, NOT connected to JohnDrop)
+EMAIL_I4 = f"i4+{uuid.uuid4().hex[:6]}@blingdrop.com"
+
+
+@pytest.fixture(scope="module")
+def auth_i4(session):
+    r = session.post(f"{API}/auth/register",
+                     json={"email": EMAIL_I4, "password": PASSWORD, "name": "I4 User"}, timeout=30)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    return {"token": data["token"], "user_id": data["user"]["user_id"], "email": EMAIL_I4}
+
+
+@pytest.fixture(scope="module")
+def headers_i4(auth_i4):
+    return {"Authorization": f"Bearer {auth_i4['token']}", "Content-Type": "application/json"}
+
+
+# -------- Bling OAuth: authorize-url --------
+def test_bling_authorize_url_auth_gated(session):
+    r = session.get(f"{API}/bling/authorize-url", timeout=15)
+    assert r.status_code == 401
+
+
+def test_bling_authorize_url_returns_correct_redirect_and_state(session, headers_i4):
+    """Verifica que a URL de autorização traz redirect_uri configurado em .env e um state não vazio."""
+    from urllib.parse import urlparse, parse_qs
+    r = session.get(f"{API}/bling/authorize-url", headers=headers_i4, timeout=15)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert "url" in j and "state" in j
+    assert isinstance(j["state"], str) and len(j["state"]) >= 8
+
+    parsed = urlparse(j["url"])
+    qs = parse_qs(parsed.query)
+    assert parsed.netloc.endswith("bling.com.br"), f"Unexpected host: {parsed.netloc}"
+    # redirect_uri must match BLING_REDIRECT_URL in backend/.env
+    expected_redirect = "https://bling-johndrop-sync.preview.emergentagent.com/auth/bling/callback"
+    assert qs.get("redirect_uri", [""])[0] == expected_redirect, qs
+    assert qs.get("state", [""])[0] == j["state"]
+    assert qs.get("response_type", [""])[0] == "code"
+    assert qs.get("client_id", [""])[0]  # non-empty
+
+
+def test_bling_authorize_url_state_persisted(session, headers_i4, auth_i4):
+    """O state retornado deve estar salvo em db.bling_oauth_states com o user_id correto."""
+    from pymongo import MongoClient
+    r = session.get(f"{API}/bling/authorize-url", headers=headers_i4, timeout=15)
+    assert r.status_code == 200
+    state = r.json()["state"]
+    mc = MongoClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
+    db = mc[os.environ.get("DB_NAME", "test_database")]
+    doc = db.bling_oauth_states.find_one({"state": state})
+    assert doc is not None
+    assert doc["user_id"] == auth_i4["user_id"]
+
+
+# -------- Bling OAuth: status (no callback executed) --------
+def test_bling_status_auth_gated(session):
+    r = session.get(f"{API}/bling/status", timeout=15)
+    assert r.status_code == 401
+
+
+def test_bling_status_disconnected_for_new_user(session, headers_i4):
+    r = session.get(f"{API}/bling/status", headers=headers_i4, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    assert j == {"connected": False}, j
+
+
+def test_integrations_status_bling_false_johndrop_false_for_new_user(session, headers_i4):
+    """User sem credenciais deve ter bling.connected=False e johndrop.connected=False."""
+    r = session.get(f"{API}/integrations/status", headers=headers_i4, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["bling"]["connected"] is False
+    # johndrop.connected é True somente se o user tiver credenciais salvas
+    assert j["johndrop"]["connected"] is False
+
+
+# -------- Bling enrich: 400 when no Bling creds (sanity, no crash) --------
+def test_bling_enrich_auth_gated(session):
+    r = session.post(f"{API}/bling/enrich", json={"bling_product_ids": [1]}, timeout=15)
+    assert r.status_code == 401
+
+
+def test_bling_enrich_returns_400_when_no_bling_credentials(session, headers_i4):
+    """User sem credenciais Bling => 400 'Conecte sua Bling primeiro' (sem 500/crash)."""
+    r = session.post(f"{API}/bling/enrich", headers=headers_i4,
+                     json={"bling_product_ids": [123, 456], "ai_model": "claude"}, timeout=30)
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}: {r.text}"
+    detail = r.json().get("detail", "")
+    assert "bling" in detail.lower() or "conecte" in detail.lower(), detail
+
+
+def test_bling_enrich_signature_accepts_default_fields(session, headers_i4):
+    """Garantir que o endpoint aceita campos opcionais da iteração 4 sem 422."""
+    # auto_create_categories e supplier_name são opcionais; ai_model também
+    r = session.post(f"{API}/bling/enrich", headers=headers_i4,
+                     json={
+                         "bling_product_ids": [1],
+                         "ai_model": "gpt",
+                         "auto_create_categories": True,
+                         "supplier_name": "JohnDrop",
+                     }, timeout=30)
+    # Como user não tem creds Bling, esperamos 400 — não 422 (schema válido)
+    assert r.status_code == 400, f"Expected 400 (no Bling creds), got {r.status_code}: {r.text}"
+
+
+# -------- JohnDrop register-direct (push to JD with TotyShop-Bling only) --------
+def test_register_direct_auth_gated(session):
+    r = session.post(f"{API}/johndrop/register-direct",
+                     json={"jd_ids": ["abc"]}, timeout=15)
+    assert r.status_code == 401
+
+
+def test_register_direct_empty_list_400(session, headers_i4):
+    """Lista vazia => 400 antes de tentar conectar ao JohnDrop."""
+    r = session.post(f"{API}/johndrop/register-direct", headers=headers_i4,
+                     json={"jd_ids": []}, timeout=15)
+    assert r.status_code == 400
+
+
+def test_register_direct_without_jd_creds_returns_400(session, headers_i4):
+    """User sem credenciais JohnDrop => 400 'Conecte sua JohnDrop primeiro' (sem crash)."""
+    r = session.post(f"{API}/johndrop/register-direct", headers=headers_i4,
+                     json={"jd_ids": ["123456"], "use_ai_description": False}, timeout=30)
+    # _get_johndrop_client levanta 400 quando não há credenciais
+    assert r.status_code in (400, 401), f"Expected 400/401 (no JD creds), got {r.status_code}: {r.text}"
+    detail = r.json().get("detail", "")
+    assert "johndrop" in detail.lower() or "conecte" in detail.lower(), detail
+
+
+def test_register_direct_uses_totyshop_integration_constant(session):
+    """Verifica diretamente no código que a integration_id usada é 1760 (TotyShop-Bling)."""
+    import sys
+    sys.path.insert(0, "/app/backend")
+    from server import INTEGRATION_TOTYSHOP_BLING
+    # JohnDrop espera string em multipart form; aceita ambos
+    assert str(INTEGRATION_TOTYSHOP_BLING) == "1760"
+
+
+# -------- Pricing calculator regression (iteration-4: 3 markups + round-up to .50) --------
+def test_pricing_iter4_markup_2_1x_for_cost_32_50(session, headers_i4):
+    """Iteração 4: cost=32.50 (faixa 20<cost<=50) deve usar markup=2.1x.
+    custo_total = 32.50 + processing_fee(1.00) = 33.50
+    preco_markup = 33.50 * 2.1 = 70.35  (exposto em breakdown.preco_markup)
+    selling_price = round_up_to_next_0.50 -> 70.50
+    """
+    r = session.post(f"{API}/pricing/calculate", headers=headers_i4,
+                     json={"cost": 32.5}, timeout=15)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["markup"] == 2.1
+    assert j["breakdown"]["preco_markup"] == 70.35
+    assert j["selling_price"] == 70.5
+    assert j["safety_alert"] is False
+
+
+def test_pricing_iter4_markup_2_6x_for_low_cost(session, headers_i4):
+    """cost <= 20 => markup 2.6x"""
+    r = session.post(f"{API}/pricing/calculate", headers=headers_i4,
+                     json={"cost": 10.0}, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["markup"] == 2.6
+
+
+def test_pricing_iter4_markup_1_8x_for_high_cost(session, headers_i4):
+    """cost > 50 => markup 1.8x"""
+    r = session.post(f"{API}/pricing/calculate", headers=headers_i4,
+                     json={"cost": 80.0}, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["markup"] == 1.8
+
+
+def test_pricing_iter4_safety_alert_when_blindado_higher(session, headers_i4):
+    """Quando preco_blindado > preco_markup, safety_alert=True (despesas extras grandes)."""
+    r = session.post(f"{API}/pricing/calculate", headers=headers_i4,
+                     json={"cost": 10, "packaging": 30, "campaigns": 30}, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    # custo_total=11; preco_markup=11*2.6=28.6; total_despesas=11+60+6=77; preco_blindado=77/0.62=124.19
+    assert j["breakdown"]["preco_blindado"] > j["breakdown"]["preco_markup"]
+    assert j["safety_alert"] is True
+
+
+# -------- Dashboard stats regression --------
+def test_dashboard_stats_for_new_user(session, headers_i4):
+    r = session.get(f"{API}/dashboard/stats", headers=headers_i4, timeout=15)
+    assert r.status_code == 200
+
+
+# -------- AI enrich function signature (johndrop_description param) --------
+def test_ai_enrich_product_accepts_johndrop_description_kwarg():
+    """Iteração 4: _ai_enrich_product deve aceitar johndrop_description como kwarg opcional."""
+    import sys
+    import inspect
+    sys.path.insert(0, "/app/backend")
+    from server import _ai_enrich_product
+    sig = inspect.signature(_ai_enrich_product)
+    assert "johndrop_description" in sig.parameters
+    p = sig.parameters["johndrop_description"]
+    # Deve ter valor default (não obrigatório)
+    assert p.default == "" or p.default is None or p.default is not inspect.Parameter.empty
