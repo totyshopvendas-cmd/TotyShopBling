@@ -622,7 +622,6 @@ async def bulk_push_johndrop(data: BulkIdsIn, user: UserPublic = Depends(get_cur
                     p["jd_id"],
                     {
                         "name": p["title"],
-                        "description": p.get("description") or p["title"],
                         "sale_value": sale_value_str,
                     },
                     integration_ids=[INTEGRATION_TOTYSHOP_BLING],
@@ -1652,7 +1651,7 @@ async def johndrop_register_direct(data: JohnDropRegisterDirectIn, user: UserPub
                 calc = _calc_selling_price(cat_item["price"], packaging=0.0, campaigns=0.0)
                 sale_value_str = f"{calc['selling_price']:.2f}".replace(".", ",")
 
-                description = cat_item["clean_title"]
+                description = None  # NÃO mexer na descrição da JohnDrop por padrão
                 if data.use_ai_description:
                     try:
                         description = await _llm_generate(
@@ -1664,7 +1663,7 @@ async def johndrop_register_direct(data: JohnDropRegisterDirectIn, user: UserPub
                             model_choice=data.ai_model,
                         )
                     except Exception:
-                        pass  # fall back to clean title
+                        description = None  # falhou IA, mantém original
 
                 # Push to JohnDrop (storev2 works for both create and update)
                 result = await c.push_product(
@@ -2126,13 +2125,15 @@ async def johndrop_push(
     client = await _get_johndrop_client(user.user_id)
     async with client as c:
         try:
+            push_patch = {
+                "name": title,
+                "sale_value": sale_value_str,
+            }
+            if data.override_description is not None:
+                push_patch["description"] = description
             result = await c.push_product(
                 p["jd_id"],
-                {
-                    "name": title,
-                    "description": description,
-                    "sale_value": sale_value_str,
-                },
+                push_patch,
                 integration_ids=[INTEGRATION_TOTYSHOP_BLING],
             )
         except JohnDropAuthError as e:
