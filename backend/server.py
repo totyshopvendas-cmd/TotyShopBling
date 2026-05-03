@@ -961,6 +961,24 @@ async def integration_status(user: UserPublic = Depends(get_current_user)):
     return doc
 
 
+@api_router.post("/products/fix-skus")
+async def fix_skus(user: UserPublic = Depends(get_current_user)):
+    """Remove prefixo 'JD-' de todos os SKUs do usuário."""
+    cursor = db.products.find(
+        {"owner_id": user.user_id, "sku": {"$regex": "^JD-"}},
+        {"_id": 0, "id": 1, "sku": 1},
+    )
+    updated = 0
+    async for doc in cursor:
+        new_sku = doc["sku"][3:]  # remove "JD-"
+        await db.products.update_one(
+            {"id": doc["id"], "owner_id": user.user_id},
+            {"$set": {"sku": new_sku, "updated_at": _now()}},
+        )
+        updated += 1
+    return {"updated": updated}
+
+
 class IntegrationToggleIn(BaseModel):
     service: Literal["bling", "johndrop", "make", "discord"]
     connected: bool
@@ -1271,7 +1289,7 @@ async def johndrop_import_real(data: JohnDropImportRealIn, user: UserPublic = De
             "id": pid,
             "owner_id": user.user_id,
             "jd_id": jd_id,
-            "sku": f"JD-{product_code}" if product_code else f"JD-{jd_id}",
+            "sku": product_code if product_code else f"JD{jd_id}",
             "product_code": product_code,
             "title": seo_title,
             "brand": "",
