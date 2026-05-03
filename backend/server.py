@@ -1923,7 +1923,9 @@ async def _ai_enrich_product(
         "  • Linha 'Por que escolher este modelo?'\n"
         "  • 4 a 6 destaques técnicos no formato 'Nome do Recurso: explicação curta do benefício.' (cada um em sua linha, sem bullet character)\n"
         "Sem emojis. Sem listas <ul>/<li>. Sem nome de marca. Tom profissional e persuasivo.\n\n"
-        "- descricao_complementar: HTML com 6 a 8 bullets no formato '<ul><li>texto</li><li>texto</li></ul>'. "
+        "- descricao_complementar: HTML com 6 a 8 bullets no formato '<p>• texto</p><p>• texto</p>'. "
+        "FORMATO OBRIGATÓRIO: cada bullet em uma tag <p> separada, começando com o caractere bullet '• ' (U+2022 + espaço) seguido do texto. "
+        "NÃO use <ul>/<li>. NÃO use '-' nem '*'. APENAS '<p>• ...</p><p>• ...</p>'. Esse é o formato exigido pela Buy Box Amazon do Bling.\n"
         "REGRAS RÍGIDAS dos bullets:\n"
         "  1. NUNCA use o NOME do produto como bullet (zero valor de venda).\n"
         "  2. NUNCA use frases genéricas como 'Alta durabilidade', 'Design moderno', 'Qualidade premium', 'Excelente custo-benefício', 'Fácil manuseio'. Esses adjetivos vagos servem para qualquer produto e estão PROIBIDOS.\n"
@@ -1931,8 +1933,8 @@ async def _ai_enrich_product(
         "  4. Espelhe os destaques técnicos da descricao_curta — mesmo recurso, frase diferente, mais sintética.\n"
         "  5. Cada bullet entre 60-150 caracteres.\n"
         "  6. Comece com o nome do recurso/benefício, não com verbos genéricos.\n"
-        "  7. Sem emojis, sem ícones. Apenas texto puro entre <li></li>.\n"
-        "Retorne só a lista <ul><li>...</li></ul>, sem introdução.\n\n"
+        "  7. Sem emojis, sem ícones. Apenas texto puro entre <p>• ...</p>.\n"
+        "Retorne apenas a sequência de <p>•&nbsp;texto</p>, sem <ul>, sem introdução.\n\n"
         "- categoria_sugerida: nome da categoria mais adequada. Se uma das existentes servir, use exatamente o nome dela. "
         "Se nenhuma servir, proponha uma nova categoria descritiva em português.\n\n"
         "- ncm: código NCM de 8 dígitos adequado ao produto (apenas números, sem pontos/traços)\n"
@@ -1987,17 +1989,39 @@ async def _ai_enrich_product(
         r"excelente custo[- ]benef[ií]cio", r"f[áa]cil manuseio", r"f[áa]cil instala[cç][ãa]o",
         r"qualidade garantida", r"acabamento premium",
     ]
+
+    def _extract_bullets(html: str) -> list[str]:
+        """Extract bullet text from any of the possible AI output formats:
+        <ul><li>...</li></ul>, <p>• ...</p>, plain text lines starting with • or -."""
+        if not html:
+            return []
+        # Try <li> first
+        items = [m.group(1).strip() for m in re.finditer(r"<li[^>]*>(.*?)</li>", html, flags=re.I | re.S)]
+        if items:
+            return [re.sub(r"<[^>]+>", "", x).strip().lstrip("•-* ").strip() for x in items if x.strip()]
+        # Try <p>• ...</p>
+        items = [m.group(1).strip() for m in re.finditer(r"<p[^>]*>(.*?)</p>", html, flags=re.I | re.S)]
+        if items:
+            return [re.sub(r"<[^>]+>", "", x).replace("&nbsp;", " ").strip().lstrip("•-* ").strip() for x in items if x.strip()]
+        # Plain text fallback
+        lines = [ln.strip() for ln in re.sub(r"<[^>]+>", "\n", html).splitlines() if ln.strip()]
+        return [ln.lstrip("•-* ").strip() for ln in lines if ln.lstrip("•-* ").strip()]
+
+    def _format_complementar(bullets: list[str]) -> str:
+        """Canonical Bling/Amazon format: <p>• texto</p> per bullet."""
+        return "".join(f"<p>•&nbsp;{b}</p>" for b in bullets if b)
+
     def _bullets(html: str) -> list[str]:
-        return [m.group(1).strip() for m in re.finditer(r"<li>(.*?)</li>", html or "", flags=re.I | re.S)]
+        return _extract_bullets(html)
 
     def _is_bad(bullets: list[str], product_title: str) -> str | None:
         if len(bullets) < 6:
             return f"apenas {len(bullets)} bullets — precisa 6 a 8"
         # Check generic
         for b in bullets:
-            low = b.lower().strip()
+            low = b.lower().strip().rstrip(".")
             for pat in GENERIC_PATTERNS:
-                if re.fullmatch(rf"\W*{pat}\W*\.?", low) or low == pat.replace(r"[- ]", " ").replace(r"[ií]", "i").replace(r"[áa]", "a").replace(r"[cç]", "c").replace(r"[ãa]", "a"):
+                if re.fullmatch(rf"\W*{pat}\W*", low):
                     return f"bullet genérico proibido: '{b}'"
         # Check first bullet isn't just product name
         title_norm = re.sub(r"\W+", "", product_title.lower())
@@ -2016,13 +2040,19 @@ async def _ai_enrich_product(
             "PROIBIDO: 'alta durabilidade', 'design moderno', 'qualidade premium', 'fácil manuseio', "
             "'excelente custo-benefício', repetir o nome do produto. "
             "Cada bullet DEVE citar uma especificação técnica real (DPI, polegadas, watts, capacidade em ml/L, "
-            "material específico, conectividade, modos de operação, autonomia, voltagem, etc)."
+            "material específico, conectividade, modos de operação, autonomia, voltagem, etc). "
+            "FORMATO OBRIGATÓRIO: <p>• texto</p><p>• texto</p> — sem <ul>, sem <li>."
         )
         raw2 = await _llm_generate(system, retry_user, ai_model)
         try:
             result = _parse(raw2)
+            bullets = _bullets(result.get("descricao_complementar", ""))
         except Exception:
             pass  # keep first result if retry fails to parse
+
+    # Always normalize to canonical Bling/Amazon format regardless of what AI returned
+    if bullets:
+        result["descricao_complementar"] = _format_complementar(bullets)
 
     return result
 
