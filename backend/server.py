@@ -1726,11 +1726,11 @@ async def bling_authorize_url(user: UserPublic = Depends(get_current_user)):
     if not BLING_CLIENT_ID or not BLING_REDIRECT_URL:
         raise HTTPException(status_code=500, detail="Bling não configurado no servidor")
     state = generate_state()
-    # Save state tied to user_id (10 min TTL)
+    # Save state tied to user_id (TTL 10 min via startup index)
     await db.bling_oauth_states.insert_one({
         "state": state,
         "user_id": user.user_id,
-        "created_at": _now(),
+        "created_at": datetime.now(timezone.utc),
     })
     url = build_authorize_url(BLING_CLIENT_ID, BLING_REDIRECT_URL, state)
     return {"url": url, "state": state}
@@ -2253,6 +2253,15 @@ app.add_middleware(
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def startup_db_indexes():
+    # TTL: OAuth states expire 10 min after creation
+    try:
+        await db.bling_oauth_states.create_index("created_at", expireAfterSeconds=600)
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")

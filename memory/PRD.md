@@ -98,7 +98,20 @@ User requested a system integrating **Bling (ERP)** with **JohnDrop (dropshippin
 - UI atualizada: exibe markup badge, lucro real com %, preço blindado comparativo, alerta amarelo, resumo de despesas detalhado + tabela de regras fixas + tabela de markup escalonado
 - **Bug fix frontend**: ProductEditor.jsx tinha lixo de código duplicado no fim causando erro de sintaxe no webpack
 
-## Prioritized Backlog
+## Iteration 6 (Feb 26, 2026) - Bling OAuth fix + AI uses JohnDrop description
+### Fixed
+- **Loop infinito Bling OAuth**: causa raiz era `BLING_REDIRECT_URL` no backend apontando para preview URL antiga (`135872d9-...`) enquanto o frontend rodava em `bling-johndrop-sync...`. Corrigido em `/app/backend/.env`. User cadastrou a nova URL no painel Bling Developer.
+- **BLING_CLIENT_SECRET** atualizado para o secret correto fornecido pelo user.
+- TTL index 10min em `db.bling_oauth_states` via startup hook (states abandonados não acumulam mais).
+- `created_at` em bling_oauth_states agora é `datetime` (não ISO string) para TTL funcionar.
+
+### Added
+- **AI Enrichment usa descrição original da JohnDrop**: `_ai_enrich_product` agora aceita `johndrop_description` kwarg. `/api/bling/enrich` mapeia `bling.codigo` → `products.sku` → `products.jd_id` e busca via `JohnDropClient.fetch_product_form(jd_id)` antes de chamar IA. HTML é stripado pra texto limpo (preserva quebras), limitado a 4k chars. IA reescreve profissionalmente em vez de copiar literalmente.
+- Log `bling_enrich_log.used_johndrop_description` para auditoria.
+- Resposta de `/bling/enrich` inclui `used_johndrop_description: bool` por produto.
+
+### Testing iteration 6
+- 71/71 backend tests pass against deployed preview. Bling authorize-url retorna redirect_uri correto. Bling enrich responde 400 (não crasha) sem credenciais. Sem regressões em pricing, JohnDrop catalog/register-direct, auth, integrations.
 ### P0 (post-MVP, for next phase)
 - Real Bling API OAuth integration (token management, auto-refresh)
 - Real JohnDrop API (or webhook/scraper) for live stock
