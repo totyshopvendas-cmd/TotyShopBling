@@ -552,18 +552,3 @@ export default function ProductEditor() {
     </Layout>
   );
 }
- })}
-                rows={4}
-                data-testid="kwai-specs"
-                className="w-full bg-[#F7F7F7] border-b-2 border-transparent hover:border-[#E5E5E5] focus:border-[#FF3B30] focus:outline-none px-3 py-2 text-sm"
-              />
-            </div>
-            <div className="text-[11px] text-neutral-500">
-              Kwai Shop exige campos técnicos específicos conforme a categoria. Aprovação via API.
-            </div>
-          </div>
-        )}
-      </div>
-    </Layout>
-  );
-}
