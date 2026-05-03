@@ -198,6 +198,26 @@ class BlingClient:
             raise BlingAPIError(f"list_contacts: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", [])
 
+    async def find_contact_by_name(self, name_query: str, max_pages: int = 5) -> Optional[dict]:
+        """Search Bling contacts by name (case-insensitive substring). Returns first match or None."""
+        needle = (name_query or "").lower().strip()
+        if not needle:
+            return None
+        for page in range(1, max_pages + 1):
+            r = await self._req("GET", "/contatos", params={"pagina": page, "limite": 100, "criterio": 1, "pesquisa": name_query})
+            if r.status_code != 200:
+                break
+            items = r.json().get("data", [])
+            if not items:
+                break
+            for it in items:
+                nome = (it.get("nome") or "").lower()
+                if needle in nome:
+                    return it
+            if len(items) < 100:
+                break
+        return None
+
     # ---- Depositos ----
     async def list_deposits(self) -> list:
         r = await self._req("GET", "/depositos")

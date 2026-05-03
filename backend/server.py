@@ -1885,7 +1885,7 @@ class BlingEnrichIn(BaseModel):
     bling_product_ids: List[int]
     ai_model: Literal["claude", "gpt"] = "claude"
     auto_create_categories: bool = True
-    supplier_name: str = "JohnDrop"
+    supplier_name: str = "Jonh Variedades"
 
 
 async def _ai_enrich_product(
@@ -2123,6 +2123,17 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
             raise HTTPException(status_code=502, detail=f"Falha ao listar categorias Bling: {e}")
         cat_by_name = {c.get("descricao", "").lower().strip(): c for c in categories}
         cat_by_id_local = {c.get("id"): c for c in categories if c.get("id")}
+
+        # Look up supplier contact ONCE (e.g., "Jonh Variedades") for fornecedores field
+        supplier_contact_id: Optional[int] = None
+        supplier_contact_name: Optional[str] = None
+        try:
+            contact = await c.find_contact_by_name(data.supplier_name)
+            if contact:
+                supplier_contact_id = contact.get("id")
+                supplier_contact_name = contact.get("nome")
+        except Exception:
+            supplier_contact_id = None
         # Load custom field definitions (may be empty if user doesn't have any)
         try:
             custom_fields = await c.list_product_custom_fields()
@@ -2147,14 +2158,19 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
 
                     # Try to fetch original JohnDrop description for context
                     jd_description = ""
-                    if jd_session and current_code:
-                        # Look up jd_id by SKU in our products collection
+                    jd_cost: Optional[float] = None
+                    if current_code:
+                        # Look up jd_id and cost_value by SKU in our products collection
                         prod_doc = await db.products.find_one(
                             {"owner_id": user.user_id, "sku": current_code},
-                            {"_id": 0, "jd_id": 1},
+                            {"_id": 0, "jd_id": 1, "cost_value": 1},
                         )
+                        if prod_doc:
+                            cv = prod_doc.get("cost_value")
+                            if isinstance(cv, (int, float)) and cv > 0:
+                                jd_cost = float(cv)
                         jd_id = prod_doc.get("jd_id") if prod_doc else None
-                        if jd_id:
+                        if jd_id and jd_session:
                             try:
                                 jd_form = await jd_session.fetch_product_form(str(jd_id))
                                 # JohnDrop uses 'description' textarea (rich HTML)
@@ -2288,6 +2304,17 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         payload["categoria"] = {"id": cat_id}
                     if campos_customizados_payload:
                         payload["camposCustomizados"] = campos_customizados_payload
+                    # Fornecedor: link supplier contact + JohnDrop SKU + cost
+                    if supplier_contact_id:
+                        forn_entry: dict = {
+                            "contato": {"id": supplier_contact_id},
+                            "padrao": True,
+                            "codigo": current_code,
+                        }
+                        if jd_cost is not None:
+                            forn_entry["precoCusto"] = jd_cost
+                            forn_entry["precoCompra"] = jd_cost
+                        payload["fornecedores"] = [forn_entry]
 
                     await c.update_product(bling_id, payload)
 
@@ -2300,6 +2327,9 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "ncm": ai.get("ncm"),
                         "ai_model": data.ai_model,
                         "used_johndrop_description": bool(jd_description),
+                        "supplier_contact_id": supplier_contact_id,
+                        "supplier_name": supplier_contact_name,
+                        "supplier_cost": jd_cost,
                         "enriched_at": _now(),
                     })
                     enriched += 1
@@ -2312,6 +2342,8 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "peso_kg": ai.get("peso_kg"),
                         "campos_customizados_count": len(campos_customizados_payload),
                         "used_johndrop_description": bool(jd_description),
+                        "supplier_linked": bool(supplier_contact_id),
+                        "supplier_cost": jd_cost,
                     })
                 except Exception as e:
                     failed.append({"bling_product_id": bling_id, "reason": str(e)})
