@@ -251,21 +251,23 @@ class JohnDropClient:
         for k, v in patch.items():
             fields[k] = v
 
-        # httpx data param doesn't send list values the way Laravel expects - we need tuples
-        # Convert list fields into repeated key tuples
-        form_tuples: list[tuple] = []
+        # Manually URL-encode to avoid httpx 0.28 bug with list-of-tuples data= param
+        from urllib.parse import urlencode
+        pairs: list[tuple] = []
         for k, v in fields.items():
             if isinstance(v, list):
                 for item in v:
-                    form_tuples.append((k, item))
+                    pairs.append((k, item if item is not None else ""))
             else:
-                form_tuples.append((k, "" if v is None else str(v)))
+                pairs.append((k, "" if v is None else str(v)))
+        body = urlencode(pairs)
 
         r = await self._client.post(
             f"/dashboard/product/storev2/{jd_id}",
-            data=form_tuples,
+            content=body,
             headers={
                 "X-CSRF-TOKEN": fields.get("_token", ""),
+                "Content-Type": "application/x-www-form-urlencoded",
                 "Referer": f"{BASE_URL}/dashboard/product/create/{jd_id}",
             },
         )
