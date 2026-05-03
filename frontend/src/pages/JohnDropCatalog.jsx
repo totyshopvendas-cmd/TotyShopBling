@@ -93,9 +93,9 @@ export default function JohnDropCatalog() {
   return (
     <Layout>
       <PageHeader
-        overline="// jonhdrop · publicar catálogo"
-        title="Catálogo sem integração"
-        description="Produtos da JohnDrop que ainda não foram cadastrados. Título SEO, código e preço blindado já pré-calculados."
+        overline="// produtos · não cadastrados"
+        title="Produtos da JohnDrop"
+        description="Seguindo o fluxo da JohnDrop: Publicar Catálogo → Todos que eu não cadastrei. Título SEO, código e preço blindado já pré-calculados."
         actions={
           <button
             onClick={importSelected}

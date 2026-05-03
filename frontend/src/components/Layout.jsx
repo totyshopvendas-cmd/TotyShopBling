@@ -1,7 +1,7 @@
 import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { LayoutDashboard, Package, RefreshCw, Plug, LogOut, Calculator, Download } from "lucide-react";
+import { LayoutDashboard, Package, RefreshCw, Plug, LogOut, Calculator, Download, CheckSquare } from "lucide-react";
 
 const NavItem = ({ to, icon: Icon, children, testId }) => (
   <NavLink

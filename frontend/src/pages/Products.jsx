@@ -77,9 +77,9 @@ export default function Products() {
   return (
     <Layout>
       <PageHeader
-        overline="// catálogo"
-        title="Produtos"
-        description="Catálogo importado da JohnDrop. Cada produto deve ser enriquecido no padrão Bling antes da exportação para os marketplaces."
+        overline="// meus produtos · já cadastrados"
+        title="Meus Produtos"
+        description="Produtos importados da JohnDrop para o BlingDrop. Prontos para envio ao Bling via ToyShop (ou edição manual para ajustes finos)."
         actions={
           <button
             onClick={createNew}
