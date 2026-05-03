@@ -48,11 +48,11 @@ export default function Layout({ children }) {
           <NavItem to="/dashboard" icon={LayoutDashboard} testId="sidebar-nav-dashboard">
             Dashboard
           </NavItem>
-          <NavItem to="/products" icon={Package} testId="sidebar-nav-products">
-            Produtos
-          </NavItem>
-          <NavItem to="/johndrop-catalog" icon={Download} testId="sidebar-nav-jd-catalog">
+          <NavItem to="/johndrop-catalog" icon={Package} testId="sidebar-nav-products">
             Catálogo JohnDrop
+          </NavItem>
+          <NavItem to="/history" icon={CheckSquare} testId="sidebar-nav-history">
+            Histórico
           </NavItem>
           <NavItem to="/pricing" icon={Calculator} testId="sidebar-nav-pricing">
             Calculadora

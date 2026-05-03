@@ -1558,6 +1558,136 @@ async def johndrop_import_real(data: JohnDropImportRealIn, user: UserPublic = De
     }
 
 
+class JohnDropRegisterDirectIn(BaseModel):
+    jd_ids: List[str]
+    use_ai_description: bool = False
+    ai_model: Literal["claude", "gpt"] = "claude"
+
+
+@api_router.post("/johndrop/register-direct")
+async def johndrop_register_direct(data: JohnDropRegisterDirectIn, user: UserPublic = Depends(get_current_user)):
+    """Cadastra produtos direto na JohnDrop (POST storev2) aplicando SEO+preço+descrição.
+    Não salva localmente. Produtos aparecem em 'Meus produtos' da JohnDrop (integrados ao Bling via TotyShop)."""
+    if not data.jd_ids:
+        raise HTTPException(status_code=400, detail="Nenhum produto selecionado")
+
+    client = await _get_johndrop_client(user.user_id)
+    registered = 0
+    failed: list[dict] = []
+    successes: list[dict] = []
+
+    # Collect catalog items once (need price/title/code from catalog)
+    target = set(data.jd_ids)
+    catalog_map: dict[str, dict] = {}
+
+    async with client as c:
+        try:
+            await c.ensure_logged_in()
+        except JohnDropAuthError as e:
+            raise HTTPException(status_code=401, detail=str(e))
+
+        # Walk catalog to map jd_ids -> metadata
+        page = 1
+        while target and page <= 30:
+            try:
+                page_data = await c.fetch_catalog_page(page=page)
+            except Exception as e:
+                failed.append({"jd_id": "-", "reason": f"catalog page {page}: {e}"})
+                break
+            for it in page_data["items"]:
+                if it["jd_id"] in target:
+                    catalog_map[it["jd_id"]] = it
+                    target.discard(it["jd_id"])
+            if page >= page_data.get("max_page", 1):
+                break
+            page += 1
+
+        # Now register each
+        for jd_id in data.jd_ids:
+            cat_item = catalog_map.get(jd_id)
+            if not cat_item:
+                failed.append({"jd_id": jd_id, "reason": "Não encontrado no catálogo"})
+                continue
+            try:
+                # Compute enrichment
+                raw_code = cat_item.get("product_code") or ""
+                product_code = sanitize_code(raw_code) or f"JD{jd_id}"
+                seo_title = apply_seo_format(
+                    cat_item["clean_title"],
+                    brand=None,
+                    ean=None,
+                    product_code=product_code,
+                )
+                calc = _calc_selling_price(cat_item["price"], packaging=0.0, campaigns=0.0)
+                sale_value_str = f"{calc['selling_price']:.2f}".replace(".", ",")
+
+                description = cat_item["clean_title"]
+                if data.use_ai_description:
+                    try:
+                        description = await _llm_generate(
+                            system_prompt=(
+                                "Você é um copywriter de e-commerce. Gere uma descrição em português brasileiro "
+                                "entre 400 e 700 caracteres, em 2 parágrafos, sem emojis, destacando benefícios e público-alvo."
+                            ),
+                            user_text=f"Produto: {seo_title}\nCódigo: {product_code}",
+                            model_choice=data.ai_model,
+                        )
+                    except Exception:
+                        pass  # fall back to clean title
+
+                # Push to JohnDrop (storev2 works for both create and update)
+                result = await c.push_product(
+                    jd_id,
+                    {
+                        "name": seo_title,
+                        "description": description,
+                        "sku": product_code,
+                        "sale_value": sale_value_str,
+                    },
+                )
+                if result["success"]:
+                    # Log for audit
+                    await db.johndrop_register_log.insert_one({
+                        "user_id": user.user_id,
+                        "jd_id": jd_id,
+                        "product_code": product_code,
+                        "seo_title": seo_title,
+                        "price_cost": cat_item["price"],
+                        "price_sale": calc["selling_price"],
+                        "markup": calc["markup"],
+                        "registered_at": _now(),
+                    })
+                    registered += 1
+                    successes.append({
+                        "jd_id": jd_id,
+                        "product_code": product_code,
+                        "seo_title": seo_title,
+                        "price_sale": calc["selling_price"],
+                        "markup": calc["markup"],
+                    })
+                else:
+                    failed.append({"jd_id": jd_id, "reason": f"status {result['status_code']}"})
+            except Exception as e:
+                failed.append({"jd_id": jd_id, "reason": str(e)})
+
+    return {
+        "registered": registered,
+        "failed": failed,
+        "successes": successes,
+        "total": len(data.jd_ids),
+    }
+
+
+@api_router.get("/johndrop/history")
+async def johndrop_history(user: UserPublic = Depends(get_current_user)):
+    """Histórico de cadastros feitos na JohnDrop via BlingDrop."""
+    cursor = db.johndrop_register_log.find(
+        {"user_id": user.user_id}, {"_id": 0, "user_id": 0}
+    ).sort("registered_at", -1).limit(200)
+    items = await cursor.to_list(200)
+    return {"items": items, "total": len(items)}
+
+
 class JohnDropPushIn(BaseModel):
     # Allow overriding specific fields without fetching from DB
     override_title: Optional[str] = None

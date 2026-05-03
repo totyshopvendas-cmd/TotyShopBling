@@ -71,20 +71,41 @@ export default function JohnDropCatalog() {
       toast.info("Selecione pelo menos 1 produto");
       return;
     }
+    if (!window.confirm(`Cadastrar ${selected.size} produto(s) direto na JohnDrop?\n\nCada produto vai receber: título SEO (60 chars) + preço blindado (,00/,50) + ${useAiDesc ? "descrição IA" : "descrição da JohnDrop"}.\n\nApós o cadastro, eles aparecem em 'Meus produtos' da JohnDrop (já integrados ao Bling via TotyShop).`)) return;
     setImporting(true);
     try {
-      const { data } = await api.post("/johndrop/import-real", {
+      const { data } = await api.post("/johndrop/register-direct", {
         jd_ids: Array.from(selected),
         use_ai_description: useAiDesc,
         ai_model: aiModel,
       });
-      toast.success(`${data.created} produtos importados para Meus Produtos`);
-      if (data.not_found?.length) toast.warning(`${data.not_found.length} não encontrados`);
-      setTimeout(() => navigate("/products"), 1500);
+      toast.success(`${data.registered} cadastrado(s) na JohnDrop!`);
+      if (data.failed?.length) toast.warning(`${data.failed.length} falharam - verifique o histórico`);
+      setSelected(new Set());
+      await load();  // refresh - cadastrados somem do catálogo (filter=without_integration)
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Falha na importação");
+      toast.error(err?.response?.data?.detail || "Falha no cadastro");
     } finally {
       setImporting(false);
+    }
+  };
+
+  const registerOne = async (jd_id) => {
+    if (!window.confirm("Cadastrar este produto direto na JohnDrop com SEO + preço blindado aplicados?")) return;
+    try {
+      const { data } = await api.post("/johndrop/register-direct", {
+        jd_ids: [jd_id],
+        use_ai_description: useAiDesc,
+        ai_model: aiModel,
+      });
+      if (data.registered > 0) {
+        toast.success(`Cadastrado! Preço: R$ ${data.successes[0].price_sale.toFixed(2).replace(".",",")}`);
+        await load();
+      } else {
+        toast.error(data.failed[0]?.reason || "Falhou");
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Falha");
     }
   };
 
@@ -104,7 +125,7 @@ export default function JohnDropCatalog() {
             className="bg-[#002FA7] hover:bg-[#00227A] disabled:opacity-50 text-white px-4 py-2 text-xs font-mono uppercase tracking-wider flex items-center gap-2 transition-colors"
           >
             <Download size={12} />
-            {importing ? "Importando..." : `Importar ${selected.size} selecionado${selected.size === 1 ? "" : "s"}`}
+            {importing ? "Cadastrando na JohnDrop..." : `Cadastrar ${selected.size} na JohnDrop`}
           </button>
         }
       />
@@ -253,6 +274,15 @@ export default function JohnDropCatalog() {
                               {pct(it.price_suggestion - it.price - 7 - it.price_suggestion * 0.18, it.price_suggestion)}%
                             </div>
                           </div>
+                          {!disabled && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); registerOne(it.jd_id); }}
+                              data-testid={`register-one-${it.jd_id}`}
+                              className="ml-auto bg-[#FF4500] hover:bg-[#cc3700] text-white px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider transition-colors shadow-[2px_2px_0px_#0A0A0A] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px]"
+                            >
+                              + Cadastrar
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
