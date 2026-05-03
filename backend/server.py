@@ -1898,8 +1898,26 @@ async def _ai_enrich_product(
 ) -> dict:
     """Usa IA pra sugerir: descrição principal + bullets, categoria, NCM, dimensões + campos customizados aplicáveis.
     Se johndrop_description for fornecida, ela serve como contexto principal para a IA."""
-    cat_names = [c.get("descricao", "") for c in existing_categories]
-    cat_list = "\n".join(f"- {n}" for n in cat_names[:60])
+    # Build full hierarchical paths for categories (e.g., "Acessórios Automotivo > Energia e Carregamento")
+    cat_by_id = {c.get("id"): c for c in existing_categories if c.get("id")}
+
+    def _full_path(cat: dict) -> str:
+        parts = [cat.get("descricao", "").strip().lstrip("_").strip()]
+        seen = {cat.get("id")}
+        parent_ref = cat.get("categoriaPai") or {}
+        parent_id = parent_ref.get("id") if isinstance(parent_ref, dict) else None
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = cat_by_id.get(parent_id)
+            if not parent:
+                break
+            parts.insert(0, parent.get("descricao", "").strip().lstrip("_").strip())
+            parent_ref = parent.get("categoriaPai") or {}
+            parent_id = parent_ref.get("id") if isinstance(parent_ref, dict) else None
+        return " > ".join(parts)
+
+    cat_paths = sorted({_full_path(c) for c in existing_categories if c.get("descricao")})
+    cat_list = "\n".join(f"- {p}" for p in cat_paths[:80])
 
     cf_lines = []
     for cf in custom_fields:
@@ -1935,8 +1953,15 @@ async def _ai_enrich_product(
         "  6. Comece com o nome do recurso/benefício, não com verbos genéricos.\n"
         "  7. Sem emojis, sem ícones. Apenas texto puro entre <p>• ...</p>.\n"
         "Retorne apenas a sequência de <p>•&nbsp;texto</p>, sem <ul>, sem introdução.\n\n"
-        "- categoria_sugerida: nome da categoria mais adequada. Se uma das existentes servir, use exatamente o nome dela. "
-        "Se nenhuma servir, proponha uma nova categoria descritiva em português.\n\n"
+        "- categoria_sugerida: nome da categoria mais adequada. \n"
+        "  REGRAS DE CATEGORIA:\n"
+        "  1. As categorias existentes vêm com o CAMINHO completo (ex: 'Acessórios Automotivo > Energia e Carregamento'). "
+        "VOCÊ DEVE analisar o caminho INTEIRO antes de decidir. Categoria 'Energia e Carregamento' SOB 'Acessórios Automotivo' SÓ serve para produtos automotivos. "
+        "NÃO use uma sub-categoria se o pai não bate com o produto.\n"
+        "  2. Se o caminho INTEIRO encaixa, use o NOME DA FOLHA (último segmento depois do último '>'). Exemplo: para 'Eletrônicos > Periféricos > Mouse' use apenas 'Mouse'.\n"
+        "  3. Se NENHUMA categoria existente bate (caminho completo + folha), proponha um nome de categoria NOVA descritiva em português e use o campo 'categoria_pai_sugerida' para indicar a categoria pai correta (se houver) ou deixe vazio para criar como top-level.\n"
+        "  Exemplo bom: 'Filtro de Linha com 4 tomadas' → categoria nova 'Filtros de Linha e Estabilizadores' (top-level), pois 'Energia e Carregamento' existente está sob 'Acessórios Automotivo'.\n\n"
+        "- categoria_pai_sugerida: (opcional) nome ou caminho da categoria pai quando criar uma nova subcategoria. Vazio se for top-level.\n\n"
         "- ncm: código NCM de 8 dígitos adequado ao produto (apenas números, sem pontos/traços)\n"
         "- peso_kg: peso em kg (número decimal realista para o produto)\n"
         "- altura_cm: altura em cm\n"
@@ -1977,7 +2002,7 @@ async def _ai_enrich_product(
         f"para extrair características, materiais, especificações, público-alvo e benefícios. "
         f"Reescreva profissionalmente, sem copiar literalmente:\n"
         f"{johndrop_description if johndrop_description else '(descrição original não disponível — use o título e seu conhecimento do produto)'}\n\n"
-        f"Categorias existentes no Bling:\n{cat_list or '(nenhuma)'}\n\n"
+        f"Categorias existentes no Bling (caminho hierárquico completo — analise PAI > FILHO antes de escolher):\n{cat_list or '(nenhuma)'}\n\n"
         f"Campos customizados disponíveis no Bling:\n{cf_list}\n\n"
         "Analise e retorne o JSON."
     )
@@ -2097,6 +2122,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Falha ao listar categorias Bling: {e}")
         cat_by_name = {c.get("descricao", "").lower().strip(): c for c in categories}
+        cat_by_id_local = {c.get("id"): c for c in categories if c.get("id")}
         # Load custom field definitions (may be empty if user doesn't have any)
         try:
             custom_fields = await c.list_product_custom_fields()
@@ -2149,16 +2175,53 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     )
 
                     # Resolve category
+                    # cat_name é a folha (último segmento do path). cat_pai é o nome da categoria pai (opcional, da IA).
                     cat_name = (ai.get("categoria_sugerida") or "").strip()
+                    cat_pai_hint = (ai.get("categoria_pai_sugerida") or "").strip()
+                    # If pai is "Pai > Filho" path, take last segment
+                    if " > " in cat_pai_hint:
+                        cat_pai_hint = cat_pai_hint.split(" > ")[-1].strip()
                     cat_id = None
                     if cat_name:
-                        existing = cat_by_name.get(cat_name.lower())
+                        # If AI returned a path like "Pai > Filho", split and use leaf as cat_name + parent as hint
+                        if " > " in cat_name:
+                            parts = [p.strip() for p in cat_name.split(" > ") if p.strip()]
+                            if len(parts) >= 2:
+                                if not cat_pai_hint:
+                                    cat_pai_hint = parts[-2]
+                                cat_name = parts[-1]
+                        # Look for existing category with matching name AND matching parent (when hint is provided)
+                        candidates = [c for c in categories if (c.get("descricao", "").strip().lstrip("_").strip().lower()) == cat_name.lower()]
+                        existing = None
+                        if cat_pai_hint and candidates:
+                            for cand in candidates:
+                                pai_id = (cand.get("categoriaPai") or {}).get("id") if isinstance(cand.get("categoriaPai"), dict) else None
+                                pai = cat_by_id_local.get(pai_id) if pai_id else None
+                                pai_desc = (pai.get("descricao", "").strip().lstrip("_").strip().lower()) if pai else ""
+                                if pai_desc == cat_pai_hint.lower():
+                                    existing = cand
+                                    break
+                        elif candidates and not cat_pai_hint:
+                            # No parent hint — only accept top-level matches (no parent) to avoid wrong sub-categories
+                            for cand in candidates:
+                                pai = cand.get("categoriaPai")
+                                if not pai or (isinstance(pai, dict) and not pai.get("id")):
+                                    existing = cand
+                                    break
                         if existing:
                             cat_id = existing.get("id")
                         elif data.auto_create_categories:
-                            new_cat = await c.create_category(cat_name)
+                            # Create new category — link to parent if hint matches an existing one
+                            parent_id = None
+                            if cat_pai_hint:
+                                for cand in categories:
+                                    if (cand.get("descricao", "").strip().lstrip("_").strip().lower()) == cat_pai_hint.lower():
+                                        parent_id = cand.get("id")
+                                        break
+                            new_cat = await c.create_category(cat_name, categoria_pai_id=parent_id)
                             cat_id = new_cat.get("id")
                             cat_by_name[cat_name.lower()] = new_cat
+                            cat_by_id_local[new_cat.get("id")] = new_cat
                             categories.append(new_cat)
 
                     # Map AI's field-name dict -> real custom field IDs
