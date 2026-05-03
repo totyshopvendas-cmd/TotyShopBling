@@ -1646,6 +1646,7 @@ async def johndrop_register_direct(data: JohnDropRegisterDirectIn, user: UserPub
                         "sku": product_code,
                         "sale_value": sale_value_str,
                     },
+                    integration_ids=[INTEGRATION_TOTYSHOP_BLING],
                 )
                 if result["success"]:
                     # Log for audit
