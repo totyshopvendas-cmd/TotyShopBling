@@ -79,7 +79,7 @@ export default function JohnDropCatalog() {
         use_ai_description: useAiDesc,
         ai_model: aiModel,
       });
-      toast.success(`${data.registered} cadastrado(s) na JohnDrop!`);
+      toast.success(`${data.registered} cadastrado(s)! Aguarde até 5 min para efetivar a transação no Bling via TotyShop.`);
       if (data.failed?.length) toast.warning(`${data.failed.length} falharam - verifique o histórico`);
       setSelected(new Set());
       await load();  // refresh - cadastrados somem do catálogo (filter=without_integration)
@@ -99,7 +99,7 @@ export default function JohnDropCatalog() {
         ai_model: aiModel,
       });
       if (data.registered > 0) {
-        toast.success(`Cadastrado! Preço: R$ ${data.successes[0].price_sale.toFixed(2).replace(".",",")}`);
+        toast.success(`Cadastrado! ${data.successes[0].price_sale ? `Preço: R$ ${data.successes[0].price_sale.toFixed(2).replace(".",",")} · ` : ""}Aguarde até 5 min para o produto aparecer no Bling (TotyShop repassando).`);
         await load();
       } else {
         toast.error(data.failed[0]?.reason || "Falhou");

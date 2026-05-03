@@ -254,7 +254,10 @@ class JohnDropClient:
         """Re-submit the product form with overrides. Preserves all other fields.
         patch keys are the override values.
         integration_ids: se fornecido, sobrescreve 'integrations[]' com apenas esses IDs
-        (útil para forçar só TotyShop-Bling em vez das 5 integrações padrão)."""
+        (útil para forçar só TotyShop-Bling em vez das 5 integrações padrão).
+
+        IMPORTANT: JohnDrop uses enctype=multipart/form-data so we MUST send multipart
+        (URL-encoded POSTs return 200 OK but silently discard the data)."""
         fields = await self.fetch_product_form(jd_id)
         # Merge: list fields stay, scalar fields get overridden
         for k, v in patch.items():
@@ -263,30 +266,48 @@ class JohnDropClient:
         if integration_ids is not None:
             fields["integrations[]"] = list(integration_ids)
 
-        # Manually URL-encode to avoid httpx 0.28 bug with list-of-tuples data= param
-        from urllib.parse import urlencode
-        pairs: list[tuple] = []
+        # Build multipart/form-data body manually (httpx files= doesn't handle repeated keys cleanly)
+        import uuid as _uuid
+        boundary = f"----BlingDropFD{_uuid.uuid4().hex}"
+        lines: list[str] = []
         for k, v in fields.items():
             if isinstance(v, list):
-                for item in v:
-                    pairs.append((k, item if item is not None else ""))
+                items = v
             else:
-                pairs.append((k, "" if v is None else str(v)))
-        body = urlencode(pairs)
+                items = [v if v is not None else ""]
+            for item in items:
+                lines.append(f"--{boundary}")
+                lines.append(f'Content-Disposition: form-data; name="{k}"')
+                lines.append("")
+                lines.append(str(item))
+        lines.append(f"--{boundary}--")
+        lines.append("")
+        body = "\r\n".join(lines).encode("utf-8")
 
         r = await self._client.post(
             f"/dashboard/product/storev2/{jd_id}",
             content=body,
             headers={
                 "X-CSRF-TOKEN": fields.get("_token", ""),
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
                 "Referer": f"{BASE_URL}/dashboard/product/create/{jd_id}",
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
             },
         )
         final = str(r.url)
-        success = r.status_code in (200, 302) and "/login" not in final
+        # JohnDrop returns JSON when X-Requested-With is set:
+        # {"success": true, "message": "Produto criado com sucesso..."}
+        server_message = ""
+        try:
+            data = r.json()
+            success = bool(data.get("success")) and r.status_code == 200
+            server_message = (data.get("message") or "").replace("<br>", " ")
+        except Exception:
+            success = r.status_code in (200, 302) and "/login" not in final
         return {
             "success": success,
             "status_code": r.status_code,
             "final_url": final,
+            "message": server_message,
         }
