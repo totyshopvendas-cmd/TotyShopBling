@@ -812,6 +812,15 @@ SEED_PRODUCTS = [
 ]
 
 
+def sanitize_code(code: str) -> str:
+    """Mantém apenas letras, números e hífen. Colapsa hífens duplicados."""
+    if not code:
+        return ""
+    t = re.sub(r"[^A-Za-z0-9-]+", "-", code)
+    t = re.sub(r"-+", "-", t)
+    return t.strip("-")
+
+
 def apply_seo_format(raw_title: str, brand: Optional[str], ean: Optional[str], product_code: str) -> str:
     """Rule-based SEO formatter for JohnDrop imports.
     - Remove brand & EAN from title
@@ -963,19 +972,30 @@ async def integration_status(user: UserPublic = Depends(get_current_user)):
 
 @api_router.post("/products/fix-skus")
 async def fix_skus(user: UserPublic = Depends(get_current_user)):
-    """Remove prefixo 'JD-' de todos os SKUs do usuário."""
+    """Remove prefixo 'JD-' e sanitiza SKU/product_code (só mantém A-Z, 0-9, -)."""
     cursor = db.products.find(
-        {"owner_id": user.user_id, "sku": {"$regex": "^JD-"}},
-        {"_id": 0, "id": 1, "sku": 1},
+        {"owner_id": user.user_id},
+        {"_id": 0, "id": 1, "sku": 1, "product_code": 1},
     )
     updated = 0
     async for doc in cursor:
-        new_sku = doc["sku"][3:]  # remove "JD-"
-        await db.products.update_one(
-            {"id": doc["id"], "owner_id": user.user_id},
-            {"$set": {"sku": new_sku, "updated_at": _now()}},
-        )
-        updated += 1
+        orig_sku = doc.get("sku") or ""
+        orig_code = doc.get("product_code") or ""
+        new_sku = orig_sku
+        if new_sku.startswith("JD-"):
+            new_sku = new_sku[3:]
+        new_sku = sanitize_code(new_sku)
+        new_code = sanitize_code(orig_code)
+        if new_sku != orig_sku or new_code != orig_code:
+            await db.products.update_one(
+                {"id": doc["id"], "owner_id": user.user_id},
+                {"$set": {
+                    "sku": new_sku or orig_sku,
+                    "product_code": new_code or orig_code,
+                    "updated_at": _now(),
+                }},
+            )
+            updated += 1
     return {"updated": updated}
 
 
@@ -1261,7 +1281,7 @@ async def johndrop_import_real(data: JohnDropImportRealIn, user: UserPublic = De
         if existing:
             skipped += 1
             continue
-        product_code = it["product_code"] or f"JD{jd_id}"
+        product_code = sanitize_code(it["product_code"]) if it["product_code"] else f"JD{jd_id}"
         seo_title = apply_seo_format(it["clean_title"], brand=None, ean=None, product_code=product_code)
         # Preço sugerido pela Calculadora Blindada (markup escalonado)
         calc = _calc_selling_price(it["price"], packaging=0.0, campaigns=0.0)
