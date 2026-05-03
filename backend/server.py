@@ -1944,10 +1944,26 @@ async def _ai_enrich_product(
         "- comprimento_cm: comprimento em cm\n"
         "- unidade: 'Un', 'Pc' ou 'Cx' conforme o produto\n\n"
         "- campos_customizados: DICT (objeto) mapeando NOME DO CAMPO para VALOR sugerido. "
-        "Preencha APENAS os campos que realmente se aplicam ao produto (ex: 'Público-alvo' sempre aplica, "
-        "mas 'Idade mínima recomendada para jogo de tabuleiro' só aplica se for jogo). "
-        "Se o campo tiver opções pré-definidas, use uma delas. "
-        "Se não tiver certeza se aplica, NÃO inclua o campo. Exemplo: {\"Público-alvo\": \"Adulto\", \"Peso do item\": \"0.2\"}\n\n"
+        "REGRA: PREENCHA o MÁXIMO POSSÍVEL de campos. Se houver QUALQUER inferência razoável a partir do produto, PREENCHA. "
+        "Inferências padrão para campos comuns (use estes defaults quando aplicável):\n"
+        "  • 'País de Origem' / 'Pais de Origem' → 'China' (padrão dropshipping)\n"
+        "  • 'Origem da mercadoria' → '1' (estrangeira - importação direta) — formato inteiro\n"
+        "  • 'Modelo' → use o título do produto resumido em 3-5 palavras-chave OU o código/SKU\n"
+        "  • 'Número do modelo' → o SKU/código do produto\n"
+        "  • 'Tipo de material' / 'Tipo de tecido' → infira do produto (ex: 'Plástico ABS', 'Alumínio', 'Aço carbono', 'Algodão', 'Silicone', 'Metal', 'Madeira MDF')\n"
+        "  • 'Marca' → 'Sem Marca' / 'Genérica' / 'Multimarca' (NUNCA invente um nome)\n"
+        "  • 'Tipo de garantia' → 'Garantia do vendedor' (padrão)\n"
+        "  • 'Cor' → infira da imagem/descrição (ex: 'Preto', 'Branco', 'Cinza')\n"
+        "  • 'Peso do item' → mesmo valor de peso_kg em kg\n"
+        "  • 'Quantidade de itens' → '1'\n"
+        "  • 'Baterias são necessárias' / 'Bateria inclusa' → 'Não' (a menos que o produto exija)\n"
+        "  • 'Voltagem' → 'Bivolt' (a menos que o produto seja específico de 110V/220V)\n"
+        "  • 'Público-alvo' → 'Adulto' (ou outro se evidente)\n"
+        "  • 'Faixa etária' → 'Adulto' (ou ajuste se for produto infantil)\n"
+        "  • 'Tema de variação' → omita se o produto não tem variações\n"
+        "Se o campo tiver opções pré-definidas (lista), use EXATAMENTE uma delas. "
+        "SÓ omita o campo se for 100% inaplicável (ex: 'Idade mínima jogo de tabuleiro' para um mouse). "
+        "Exemplo: {\"País de Origem\": \"China\", \"Modelo\": \"Suporte Articulado Notebook\", \"Tipo de material\": \"Alumínio\", \"Marca\": \"Sem Marca\", \"Cor\": \"Prata\", \"Peso do item\": \"1.8\"}\n\n"
         "REGRAS GLOBAIS:\n"
         "1. NÃO inclua nome de marca em nenhum texto\n"
         "2. NÃO use emojis em lugar nenhum\n"
@@ -2146,12 +2162,35 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                             categories.append(new_cat)
 
                     # Map AI's field-name dict -> real custom field IDs
+                    # Match by exact name first, then by normalized substring (handles "País de Origem" vs "Pais de Origem", etc.)
+                    def _norm(s: str) -> str:
+                        s = (s or "").lower().strip()
+                        # remove accents
+                        for a, b in [("á","a"),("ã","a"),("â","a"),("à","a"),("é","e"),("ê","e"),("í","i"),("ó","o"),("õ","o"),("ô","o"),("ú","u"),("ç","c")]:
+                            s = s.replace(a, b)
+                        # collapse non-alnum
+                        s = re.sub(r"[^a-z0-9]+", " ", s).strip()
+                        return s
+
+                    cf_by_norm = {_norm(cf.get("nome", "")): cf for cf in custom_fields}
+
                     campos_customizados_payload = []
+                    used_field_ids = set()
                     ai_campos = ai.get("campos_customizados") or {}
                     if isinstance(ai_campos, dict):
                         for field_name, value in ai_campos.items():
-                            cf_def = cf_by_name.get(str(field_name).lower().strip())
-                            if cf_def and value not in (None, ""):
+                            if value in (None, ""):
+                                continue
+                            ai_norm = _norm(str(field_name))
+                            cf_def = cf_by_name.get(str(field_name).lower().strip()) or cf_by_norm.get(ai_norm)
+                            # Substring fallback
+                            if not cf_def:
+                                for k, v in cf_by_norm.items():
+                                    if k and (k in ai_norm or ai_norm in k):
+                                        cf_def = v
+                                        break
+                            if cf_def and cf_def.get("id") not in used_field_ids:
+                                used_field_ids.add(cf_def.get("id"))
                                 campos_customizados_payload.append({
                                     "idCampoCustomizado": cf_def.get("id"),
                                     "valor": str(value),
@@ -2165,6 +2204,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "tipo": product.get("tipo", "P"),
                         "situacao": product.get("situacao", "A"),
                         "formato": product.get("formato", "S"),
+                        "condicao": 1,  # 0=Não especificado, 1=Novo, 2=Usado, 3=Recondicionado — sempre Novo
                         "descricaoCurta": ai.get("descricao_curta") or product.get("descricaoCurta"),
                         "descricaoComplementar": ai.get("descricao_complementar") or product.get("descricaoComplementar"),
                         "unidade": ai.get("unidade") or product.get("unidade", "Un"),
