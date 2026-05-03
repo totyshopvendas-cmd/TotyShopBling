@@ -481,6 +481,194 @@ async def delete_product(product_id: str, user: UserPublic = Depends(get_current
     return {"ok": True}
 
 
+# ============ Bulk Operations (Automação em Massa) ============
+class BulkIdsIn(BaseModel):
+    product_ids: List[str]
+
+
+class BulkAIIn(BaseModel):
+    product_ids: List[str]
+    ai_model: Literal["claude", "gpt"] = "claude"
+
+
+@api_router.post("/products/bulk/delete")
+async def bulk_delete(data: BulkIdsIn, user: UserPublic = Depends(get_current_user)):
+    r = await db.products.delete_many(
+        {"id": {"$in": data.product_ids}, "owner_id": user.user_id}
+    )
+    return {"deleted": r.deleted_count}
+
+
+@api_router.post("/products/bulk/recalculate-prices")
+async def bulk_recalc_prices(data: BulkIdsIn, user: UserPublic = Depends(get_current_user)):
+    updated = 0
+    async for p in db.products.find(
+        {"id": {"$in": data.product_ids}, "owner_id": user.user_id},
+        {"_id": 0, "id": 1, "cost": 1},
+    ):
+        cost = p.get("cost", 0)
+        if cost <= 0:
+            continue
+        calc = _calc_selling_price(cost, packaging=0.0, campaigns=0.0)
+        await db.products.update_one(
+            {"id": p["id"], "owner_id": user.user_id},
+            {"$set": {"price": calc["selling_price"], "updated_at": _now()}},
+        )
+        updated += 1
+    return {"updated": updated}
+
+
+@api_router.post("/products/bulk/improve-titles")
+async def bulk_improve_titles(data: BulkAIIn, user: UserPublic = Depends(get_current_user)):
+    """Usa IA pra refinar cada título: remove marcas embutidas, melhora SEO,
+    mantém código do produto no fim, máximo 60 chars."""
+    updated = 0
+    errors: list[str] = []
+    async for p in db.products.find(
+        {"id": {"$in": data.product_ids}, "owner_id": user.user_id},
+        {"_id": 0, "id": 1, "title": 1, "product_code": 1},
+    ):
+        try:
+            system = (
+                "Você é um especialista em SEO para marketplaces brasileiros. "
+                "Reescreva o título abaixo removendo marcas embutidas (ex: Kapbom, INOVA, Maxmidia, Altomex), "
+                "mantendo MÁXIMO 60 caracteres e incluindo o código do produto no FINAL. "
+                "Priorize palavras-chave de busca. Retorne APENAS o título, sem aspas, sem explicação."
+            )
+            user_text = (
+                f"Título atual: {p['title']}\n"
+                f"Código a incluir no final: {p.get('product_code', '')}\n"
+                "Reescreva (máx 60 chars):"
+            )
+            new_title = await _llm_generate(system, user_text, data.ai_model)
+            if len(new_title) > 60:
+                new_title = new_title[:60].rstrip()
+            await db.products.update_one(
+                {"id": p["id"], "owner_id": user.user_id},
+                {"$set": {"title": new_title, "updated_at": _now()}},
+            )
+            updated += 1
+        except Exception as e:
+            errors.append(f"{p['id']}: {e}")
+    return {"updated": updated, "errors": errors}
+
+
+@api_router.post("/products/bulk/generate-descriptions")
+async def bulk_generate_descriptions(data: BulkAIIn, user: UserPublic = Depends(get_current_user)):
+    """Gera descrições IA apenas para produtos sem descrição ou com descrição curta."""
+    updated = 0
+    errors: list[str] = []
+    async for p in db.products.find(
+        {"id": {"$in": data.product_ids}, "owner_id": user.user_id},
+        {"_id": 0, "id": 1, "title": 1, "description": 1},
+    ):
+        desc = p.get("description", "") or ""
+        if len(desc) >= 200:
+            continue  # já tem descrição boa
+        try:
+            system = (
+                "Você é um copywriter de e-commerce. Gere uma descrição em português brasileiro "
+                "entre 400 e 700 caracteres, em 2 parágrafos, sem emojis, destacando benefícios e público-alvo."
+            )
+            new_desc = await _llm_generate(system, f"Produto: {p['title']}", data.ai_model)
+            await db.products.update_one(
+                {"id": p["id"], "owner_id": user.user_id},
+                {"$set": {"description": new_desc, "updated_at": _now()}},
+            )
+            updated += 1
+        except Exception as e:
+            errors.append(f"{p['id']}: {e}")
+    return {"updated": updated, "errors": errors}
+
+
+@api_router.post("/products/bulk/push-johndrop")
+async def bulk_push_johndrop(data: BulkIdsIn, user: UserPublic = Depends(get_current_user)):
+    """Aplica múltiplos produtos na JohnDrop (→ Bling via ToyShop) em lote."""
+    products = [
+        p async for p in db.products.find(
+            {"id": {"$in": data.product_ids}, "owner_id": user.user_id, "jd_id": {"$ne": None}},
+            {"_id": 0},
+        )
+    ]
+    if not products:
+        raise HTTPException(status_code=400, detail="Nenhum produto com jd_id selecionado")
+
+    client = await _get_johndrop_client(user.user_id)
+    pushed = 0
+    failed: list[dict] = []
+    async with client as c:
+        try:
+            await c.ensure_logged_in()
+        except JohnDropAuthError as e:
+            raise HTTPException(status_code=401, detail=str(e))
+        for p in products:
+            try:
+                sale_value_str = f"{float(p['price']):.2f}".replace(".", ",")
+                result = await c.push_product(
+                    p["jd_id"],
+                    {
+                        "name": p["title"],
+                        "description": p.get("description") or p["title"],
+                        "sale_value": sale_value_str,
+                    },
+                )
+                if result["success"]:
+                    await db.products.update_one(
+                        {"id": p["id"], "owner_id": user.user_id},
+                        {"$set": {
+                            "sync_status": "synced",
+                            "sync_message": f"Aplicado na JohnDrop em lote ({datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M')})",
+                            "last_pushed_at": _now(),
+                            "updated_at": _now(),
+                        }},
+                    )
+                    pushed += 1
+                else:
+                    failed.append({"id": p["id"], "reason": f"status {result['status_code']}"})
+            except Exception as e:
+                failed.append({"id": p["id"], "reason": str(e)})
+    return {"pushed": pushed, "failed": failed, "total": len(products)}
+
+
+@api_router.get("/dashboard/health-summary")
+async def products_health_summary(user: UserPublic = Depends(get_current_user)):
+    """Retorna contagem de produtos por saúde: ready/warning/blocked."""
+    ready = 0
+    warning = 0
+    blocked = 0
+    async for p in db.products.find({"owner_id": user.user_id}, {"_id": 0}):
+        score = _health_score(p)
+        if score >= 90:
+            ready += 1
+        elif score >= 50:
+            warning += 1
+        else:
+            blocked += 1
+    return {"ready": ready, "warning": warning, "blocked": blocked}
+
+
+def _health_score(p: dict) -> int:
+    """Pontuação de prontidão 0-100."""
+    score = 0
+    title = p.get("title") or ""
+    if title and len(title) <= 60:
+        score += 25
+    if p.get("product_code"):
+        score += 10
+    desc = p.get("description") or ""
+    if len(desc) >= 200:
+        score += 25
+    elif len(desc) >= 50:
+        score += 10
+    if p.get("price", 0) > 0:
+        score += 20
+    if p.get("stock_johndrop", 0) > 0:
+        score += 10
+    if p.get("images") and len(p.get("images", [])) > 0:
+        score += 10
+    return score
+
+
 @api_router.post("/products/{product_id}/sync", response_model=Product)
 async def sync_product(product_id: str, user: UserPublic = Depends(get_current_user)):
     doc = await db.products.find_one(
