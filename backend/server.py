@@ -347,6 +347,59 @@ def _doc_to_product(doc: dict) -> Product:
     return Product(**doc)
 
 
+# ============ Calculadora Blindada (constants & helper - shared) ============
+COMMISSION_PCT = 0.18
+FIXED_FEE = 6.00
+MIN_MARGIN_PCT = 0.20
+PROCESSING_FEE = 1.00
+
+
+def _markup_for_cost(cost: float) -> float:
+    if cost <= 20:
+        return 2.6
+    if cost <= 50:
+        return 2.1
+    return 1.8
+
+
+def _calc_selling_price(cost: float, packaging: float = 0.0, campaigns: float = 0.0) -> dict:
+    custo_total = cost + PROCESSING_FEE
+    despesas_extras = packaging + campaigns
+    total_despesas = custo_total + despesas_extras + FIXED_FEE
+    markup = _markup_for_cost(cost)
+    preco_markup = custo_total * markup
+    preco_blindado = total_despesas / (1 - COMMISSION_PCT - MIN_MARGIN_PCT)
+    if preco_markup < preco_blindado:
+        selling_price = preco_blindado
+        safety_alert = True
+    else:
+        selling_price = preco_markup
+        safety_alert = False
+    commission_value = selling_price * COMMISSION_PCT
+    net_profit = selling_price - commission_value - FIXED_FEE - custo_total - packaging - campaigns
+    return {
+        "selling_price": round(selling_price, 2),
+        "markup": markup,
+        "safety_alert": safety_alert,
+        "breakdown": {
+            "cost": round(cost, 2),
+            "processing_fee": PROCESSING_FEE,
+            "custo_total": round(custo_total, 2),
+            "packaging": round(packaging, 2),
+            "campaigns": round(campaigns, 2),
+            "total_despesas": round(total_despesas, 2),
+            "commission_pct": COMMISSION_PCT,
+            "commission_value": round(commission_value, 2),
+            "fixed_fee": FIXED_FEE,
+            "min_margin_pct": MIN_MARGIN_PCT,
+            "net_profit": round(net_profit, 2),
+            "net_profit_pct": round(net_profit / selling_price * 100, 1) if selling_price > 0 else 0,
+            "preco_markup": round(preco_markup, 2),
+            "preco_blindado": round(preco_blindado, 2),
+        },
+    }
+
+
 @api_router.get("/products", response_model=List[Product])
 async def list_products(user: UserPublic = Depends(get_current_user)):
     cursor = db.products.find({"owner_id": user.user_id}, {"_id": 0, "owner_id": 0}).sort("created_at", -1)
@@ -1130,9 +1183,11 @@ async def johndrop_catalog(
             ean=None,
             product_code=it["product_code"] or "",
         )
-        # Pre-compute calculated price (cost = JD price, default packaging/campaigns)
-        total_cost = it["price"] + 2.0 + 5.0
-        it["price_suggestion"] = round((total_cost + FIXED_FEE) / (1 - COMMISSION_PCT - MIN_MARGIN_PCT), 2)
+        # Pre-compute blindada price (uses escalonated markup)
+        calc = _calc_selling_price(it["price"], packaging=0.0, campaigns=0.0)
+        it["price_suggestion"] = calc["selling_price"]
+        it["markup"] = calc["markup"]
+        it["safety_alert"] = calc["safety_alert"]
 
     return data
 
@@ -1190,9 +1245,9 @@ async def johndrop_import_real(data: JohnDropImportRealIn, user: UserPublic = De
             continue
         product_code = it["product_code"] or f"JD{jd_id}"
         seo_title = apply_seo_format(it["clean_title"], brand=None, ean=None, product_code=product_code)
-        # price calculator
-        total_cost = it["price"] + 2.0 + 5.0
-        suggested_price = round((total_cost + FIXED_FEE) / (1 - COMMISSION_PCT - MIN_MARGIN_PCT), 2)
+        # Preço sugerido pela Calculadora Blindada (markup escalonado)
+        calc = _calc_selling_price(it["price"], packaging=0.0, campaigns=0.0)
+        suggested_price = calc["selling_price"]
         # description via AI (optional)
         description = ""
         if data.use_ai_description:
@@ -1339,11 +1394,7 @@ async def johndrop_push(
     }
 
 
-# ============ Pricing Calculator (Calculadora Blindada) ============
-# Fixed constants mirroring https://calcblindada-krrwemcx.manus.space/
-COMMISSION_PCT = 0.18
-FIXED_FEE = 6.00
-MIN_MARGIN_PCT = 0.20
+# ============ Pricing Calculator endpoint ============
 
 
 class PricingIn(BaseModel):
@@ -1354,28 +1405,7 @@ class PricingIn(BaseModel):
 
 @api_router.post("/pricing/calculate")
 async def pricing_calculate(data: PricingIn, user: UserPublic = Depends(get_current_user)):
-    total_cost = data.cost + data.packaging + data.campaigns
-    # P * (1 - commission - margin) = total_cost + fixed_fee
-    divisor = 1 - COMMISSION_PCT - MIN_MARGIN_PCT
-    selling_price = (total_cost + FIXED_FEE) / divisor
-    commission_value = selling_price * COMMISSION_PCT
-    margin_value = selling_price * MIN_MARGIN_PCT
-    net_profit = selling_price - commission_value - FIXED_FEE - total_cost
-    return {
-        "selling_price": round(selling_price, 2),
-        "breakdown": {
-            "cost": round(data.cost, 2),
-            "packaging": round(data.packaging, 2),
-            "campaigns": round(data.campaigns, 2),
-            "total_cost": round(total_cost, 2),
-            "commission_pct": COMMISSION_PCT,
-            "commission_value": round(commission_value, 2),
-            "fixed_fee": FIXED_FEE,
-            "min_margin_pct": MIN_MARGIN_PCT,
-            "min_margin_value": round(margin_value, 2),
-            "net_profit": round(net_profit, 2),
-        },
-    }
+    return _calc_selling_price(data.cost, data.packaging, data.campaigns)
 
 
 # ============ Health ============

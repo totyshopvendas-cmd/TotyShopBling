@@ -87,6 +87,17 @@ User requested a system integrating **Bling (ERP)** with **JohnDrop (dropshippin
 4. Abrir produto em Meus Produtos → ajustar se quiser, gerar descrição IA
 5. Botão "Aplicar na JohnDrop → Bling" → POST direto pro painel da JohnDrop → ToyShop-Bling empurra pro Bling automaticamente
 
+## Iteration 5 (Feb 23, 2026) - Calculadora 100% fiel à original
+### Fixed
+- **Fórmula exata espelhada** de https://calcblindada-krrwemcx.manus.space/ (código-fonte JS extraído e decifrado):
+  - Processamento fixo: **R$ 1,00** adicionado ao custo (antes era zero)
+  - Markup escalonado: **cost ≤ 20 → 2.6x | 20 < cost ≤ 50 → 2.1x | cost > 50 → 1.8x**
+  - Preço final = **max(custoTotal × markup, totalDespesas / 0.62)**
+  - **Alerta de segurança** quando markup não cobre a versão blindada
+- Caso de teste validado: custo R$ 32,50 → R$ 70,35 (markup 2,1x, lucro R$ 18,19 = 25,9% margem) ✓
+- UI atualizada: exibe markup badge, lucro real com %, preço blindado comparativo, alerta amarelo, resumo de despesas detalhado + tabela de regras fixas + tabela de markup escalonado
+- **Bug fix frontend**: ProductEditor.jsx tinha lixo de código duplicado no fim causando erro de sintaxe no webpack
+
 ## Prioritized Backlog
 ### P0 (post-MVP, for next phase)
 - Real Bling API OAuth integration (token management, auto-refresh)
