@@ -188,6 +188,24 @@ export default function Integrations() {
                             Desconectar
                           </button>
                         ) : null
+                      ) : s.key === "bling" ? (
+                        connected ? (
+                          <button
+                            onClick={disconnectBling}
+                            data-testid="toggle-bling"
+                            className="flex-1 px-4 py-2 text-xs font-mono uppercase tracking-wider border border-[#E5E5E5] hover:border-[#E60000] hover:text-[#E60000] transition-colors"
+                          >
+                            Desconectar Bling
+                          </button>
+                        ) : (
+                          <button
+                            onClick={connectBling}
+                            data-testid="toggle-bling"
+                            className="flex-1 bg-[#002FA7] hover:bg-[#00227A] text-white px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors"
+                          >
+                            Autorizar Bling (OAuth)
+                          </button>
+                        )
                       ) : (
                         <button
                           onClick={() => toggle(s.key, !connected, s.key === "discord" ? discordHook : undefined)}
@@ -198,6 +216,16 @@ export default function Integrations() {
                         </button>
                       )}
                     </div>
+
+                    {s.key === "bling" && connected && (
+                      <button
+                        onClick={() => navigate("/bling-catalog")}
+                        data-testid="goto-bling-catalog"
+                        className="w-full mt-2 border-2 border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-4 py-2 text-xs font-mono uppercase tracking-wider flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <Sparkles size={12} /> Ir para Catálogo Bling (IA)
+                      </button>
+                    )}
 
                     {/* JohnDrop real login form */}
                     {s.key === "johndrop" && !connected && (
