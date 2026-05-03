@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
+import asyncio
 import logging
 import uuid
 import jwt
@@ -2181,6 +2182,9 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     })
                 except Exception as e:
                     failed.append({"bling_product_id": bling_id, "reason": str(e)})
+                # Throttle: Bling permite ~3 req/s. Cada produto consome 1-2 reqs (get + update + opcional create_category).
+                # 0.4s entre produtos mantém em segurança.
+                await asyncio.sleep(0.4)
         finally:
             if jd_session:
                 try:

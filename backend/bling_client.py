@@ -3,6 +3,7 @@ Docs: https://developer.bling.com.br/bling-api
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import secrets
 from typing import Optional
@@ -106,31 +107,56 @@ class BlingClient:
         if self._client:
             await self._client.aclose()
 
+    async def _req(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """HTTP request with automatic backoff on 429 (Bling rate limit ~3 req/s).
+        Retries up to 4 times with exponential backoff (0.5s, 1s, 2s, 4s)."""
+        delays = [0.5, 1.0, 2.0, 4.0]
+        for attempt, delay in enumerate([0.0] + delays):
+            if delay:
+                await asyncio.sleep(delay)
+            r = await self._client.request(method, url, **kwargs)
+            if r.status_code != 429:
+                return r
+            # On 429, respect Retry-After header if present
+            retry_after = r.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    await asyncio.sleep(min(float(retry_after), 10.0))
+                except Exception:
+                    pass
+        return r  # final response (still 429)
+
     # ---- Products ----
     async def list_products(self, page: int = 1, limit: int = 100, criterio: int = 1, tipo: Optional[str] = None) -> list:
         params = {"pagina": page, "limite": min(limit, 100), "criterio": criterio}
         if tipo:
             params["tipo"] = tipo
-        r = await self._client.get("/produtos", params=params)
+        r = await self._req("GET", "/produtos", params=params)
         if r.status_code == 401:
             raise BlingAuthError("Token inválido ou expirado")
+        if r.status_code == 429:
+            raise BlingAPIError("Limite de requisições do Bling atingido. Aguarde alguns segundos e tente novamente.")
         if r.status_code != 200:
             raise BlingAPIError(f"list_products: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", [])
 
     async def get_product(self, product_id: str | int) -> dict:
-        r = await self._client.get(f"/produtos/{product_id}")
+        r = await self._req("GET", f"/produtos/{product_id}")
         if r.status_code == 401:
             raise BlingAuthError("Token expirado")
+        if r.status_code == 429:
+            raise BlingAPIError("Limite de requisições do Bling atingido")
         if r.status_code != 200:
             raise BlingAPIError(f"get_product: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", {})
 
     async def update_product(self, product_id: str | int, payload: dict) -> dict:
         """PUT full product (Bling v3 uses PUT for full replace, PATCH deprecated in favor of partial fields)."""
-        r = await self._client.put(f"/produtos/{product_id}", json=payload)
+        r = await self._req("PUT", f"/produtos/{product_id}", json=payload)
         if r.status_code == 401:
             raise BlingAuthError("Token expirado")
+        if r.status_code == 429:
+            raise BlingAPIError("Limite de requisições do Bling atingido")
         if r.status_code not in (200, 204):
             raise BlingAPIError(f"update_product {product_id}: {r.status_code} - {r.text[:300]}")
         try:
@@ -140,9 +166,11 @@ class BlingClient:
 
     # ---- Categorias de produtos ----
     async def list_categories(self, page: int = 1, limit: int = 100) -> list:
-        r = await self._client.get("/categorias/produtos", params={"pagina": page, "limite": limit})
+        r = await self._req("GET", "/categorias/produtos", params={"pagina": page, "limite": limit})
         if r.status_code == 401:
             raise BlingAuthError("Token expirado")
+        if r.status_code == 429:
+            raise BlingAPIError("Limite de requisições do Bling atingido")
         if r.status_code != 200:
             raise BlingAPIError(f"list_categories: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", [])
@@ -151,9 +179,11 @@ class BlingClient:
         body = {"descricao": descricao}
         if categoria_pai_id:
             body["categoriaPai"] = {"id": categoria_pai_id}
-        r = await self._client.post("/categorias/produtos", json=body)
+        r = await self._req("POST", "/categorias/produtos", json=body)
         if r.status_code == 401:
             raise BlingAuthError("Token expirado")
+        if r.status_code == 429:
+            raise BlingAPIError("Limite de requisições do Bling atingido")
         if r.status_code not in (200, 201):
             raise BlingAPIError(f"create_category: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", {})
@@ -161,7 +191,7 @@ class BlingClient:
     # ---- Contatos (Fornecedores) ----
     async def list_contacts(self, page: int = 1, limit: int = 100, tipo: str = "F") -> list:
         """tipo=F: Fornecedor, C: Cliente, etc."""
-        r = await self._client.get("/contatos", params={"pagina": page, "limite": limit})
+        r = await self._req("GET", "/contatos", params={"pagina": page, "limite": limit})
         if r.status_code == 401:
             raise BlingAuthError("Token expirado")
         if r.status_code != 200:
@@ -170,7 +200,7 @@ class BlingClient:
 
     # ---- Depositos ----
     async def list_deposits(self) -> list:
-        r = await self._client.get("/depositos")
+        r = await self._req("GET", "/depositos")
         if r.status_code == 401:
             raise BlingAuthError("Token expirado")
         if r.status_code != 200:
@@ -179,7 +209,7 @@ class BlingClient:
 
     # ---- Campos Customizados (produtos) ----
     async def list_custom_field_modules(self) -> list:
-        r = await self._client.get("/campos-customizados/modulos")
+        r = await self._req("GET", "/campos-customizados/modulos")
         if r.status_code != 200:
             return []
         return r.json().get("data", [])
@@ -187,7 +217,7 @@ class BlingClient:
     async def list_custom_fields(self, module_id: int) -> list:
         """Lista campos customizados de um módulo. Para produtos, idModulo costuma ser específico.
         Retorna definições com {id, nome, tipo, valoresDePreenchimento?}."""
-        r = await self._client.get(f"/campos-customizados/modulos/{module_id}")
+        r = await self._req("GET", f"/campos-customizados/modulos/{module_id}")
         if r.status_code != 200:
             return []
         return r.json().get("data", [])
