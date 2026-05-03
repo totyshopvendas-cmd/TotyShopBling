@@ -362,6 +362,12 @@ def _markup_for_cost(cost: float) -> float:
     return 1.8
 
 
+def _round_price_up_to_half(price: float) -> float:
+    """Arredonda para cima no próximo múltiplo de 0,50 (padrão de preço .00 / .50)."""
+    import math
+    return math.ceil(price * 2) / 2
+
+
 def _calc_selling_price(cost: float, packaging: float = 0.0, campaigns: float = 0.0) -> dict:
     custo_total = cost + PROCESSING_FEE
     despesas_extras = packaging + campaigns
@@ -370,11 +376,13 @@ def _calc_selling_price(cost: float, packaging: float = 0.0, campaigns: float = 
     preco_markup = custo_total * markup
     preco_blindado = total_despesas / (1 - COMMISSION_PCT - MIN_MARGIN_PCT)
     if preco_markup < preco_blindado:
-        selling_price = preco_blindado
+        raw_price = preco_blindado
         safety_alert = True
     else:
-        selling_price = preco_markup
+        raw_price = preco_markup
         safety_alert = False
+    # Arredonda para cima no próximo .00 ou .50
+    selling_price = _round_price_up_to_half(raw_price)
     commission_value = selling_price * COMMISSION_PCT
     net_profit = selling_price - commission_value - FIXED_FEE - custo_total - packaging - campaigns
     return {
@@ -396,6 +404,7 @@ def _calc_selling_price(cost: float, packaging: float = 0.0, campaigns: float = 
             "net_profit_pct": round(net_profit / selling_price * 100, 1) if selling_price > 0 else 0,
             "preco_markup": round(preco_markup, 2),
             "preco_blindado": round(preco_blindado, 2),
+            "raw_price_before_rounding": round(raw_price, 2),
         },
     }
 
