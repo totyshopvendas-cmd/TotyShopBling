@@ -1913,14 +1913,25 @@ async def _ai_enrich_product(
     cf_list = "\n".join(cf_lines) if cf_lines else "(nenhum campo customizado disponível)"
 
     system = (
-        "Você é um especialista em cadastro de produtos no ERP Bling. "
+        "Você é um especialista em copywriting de e-commerce no ERP Bling. "
         "Analise o produto e retorne APENAS um JSON válido (sem markdown, sem explicação) com:\n\n"
-        "- descricao_curta: DESCRIÇÃO PRINCIPAL completa, profissional, pronta para venda. "
-        "Entre 500-900 caracteres. 2-3 parágrafos contínuos. Sem emojis. Sem bullet points. "
-        "Rica em características técnicas, benefícios e público-alvo. Tom profissional.\n\n"
+        "- descricao_curta: DESCRIÇÃO PRINCIPAL completa e profissional, pronta para venda. "
+        "Entre 600-1500 caracteres. Estrutura: \n"
+        "  • 1 linha de headline com pipes separando recursos-chave (ex: 'Mouse Sem Fio | Bluetooth + 2.4G | RGB | Silencioso')\n"
+        "  • 1 parágrafo introdutório vendedor (3-5 linhas) destacando para quem é e o que entrega\n"
+        "  • Linha 'Por que escolher este modelo?'\n"
+        "  • 4 a 6 destaques técnicos no formato 'Nome do Recurso: explicação curta do benefício.' (cada um em sua linha, sem bullet character)\n"
+        "Sem emojis. Sem listas <ul>/<li>. Sem nome de marca. Tom profissional e persuasivo.\n\n"
         "- descricao_complementar: HTML com 6 a 8 bullets no formato '<ul><li>texto</li><li>texto</li></ul>'. "
-        "Cada bullet com 1 característica/benefício técnico curto (80-160 chars). "
-        "Sem introdução, apenas a lista <ul><li>. Extrair os pontos-chave da descrição principal.\n\n"
+        "REGRAS RÍGIDAS dos bullets:\n"
+        "  1. NUNCA use o NOME do produto como bullet (zero valor de venda).\n"
+        "  2. NUNCA use frases genéricas como 'Alta durabilidade', 'Design moderno', 'Qualidade premium', 'Excelente custo-benefício', 'Fácil manuseio'. Esses adjetivos vagos servem para qualquer produto e estão PROIBIDOS.\n"
+        "  3. CADA bullet DEVE descrever um RECURSO CONCRETO e ESPECÍFICO do produto, mencionando o número/tecnologia/material real (ex: '1600 DPI ajustável para precisão em jogos e edição', 'Conexão dual Bluetooth 5.0 + receptor USB 2.4G inclusos', 'Iluminação RGB com 7 modos de cor configuráveis', 'Bateria recarregável com até 30h de uso contínuo').\n"
+        "  4. Espelhe os destaques técnicos da descricao_curta — mesmo recurso, frase diferente, mais sintética.\n"
+        "  5. Cada bullet entre 60-150 caracteres.\n"
+        "  6. Comece com o nome do recurso/benefício, não com verbos genéricos.\n"
+        "  7. Sem emojis, sem ícones. Apenas texto puro entre <li></li>.\n"
+        "Retorne só a lista <ul><li>...</li></ul>, sem introdução.\n\n"
         "- categoria_sugerida: nome da categoria mais adequada. Se uma das existentes servir, use exatamente o nome dela. "
         "Se nenhuma servir, proponha uma nova categoria descritiva em português.\n\n"
         "- ncm: código NCM de 8 dígitos adequado ao produto (apenas números, sem pontos/traços)\n"
@@ -1934,10 +1945,11 @@ async def _ai_enrich_product(
         "mas 'Idade mínima recomendada para jogo de tabuleiro' só aplica se for jogo). "
         "Se o campo tiver opções pré-definidas, use uma delas. "
         "Se não tiver certeza se aplica, NÃO inclua o campo. Exemplo: {\"Público-alvo\": \"Adulto\", \"Peso do item\": \"0.2\"}\n\n"
-        "REGRAS IMPORTANTES:\n"
-        "1. NÃO inclua nome de marca na descrição (produtos de múltiplas marcas)\n"
-        "2. NÃO use emojis\n"
-        "3. Retorne APENAS JSON válido puro, sem markdown"
+        "REGRAS GLOBAIS:\n"
+        "1. NÃO inclua nome de marca em nenhum texto\n"
+        "2. NÃO use emojis em lugar nenhum\n"
+        "3. Retorne APENAS JSON válido puro, sem markdown, sem comentário\n"
+        "4. Os bullets de descricao_complementar DEVEM derivar diretamente dos recursos mencionados em descricao_curta — se a Curta menciona 'Bluetooth', 'RGB', '1600 DPI', a Complementar precisa ter esses 3 bullets correspondentes."
     )
     user_text = (
         f"Produto: {title}\n"
@@ -1952,17 +1964,66 @@ async def _ai_enrich_product(
     )
     raw = await _llm_generate(system, user_text, ai_model)
     import json as _json
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-        cleaned = re.sub(r"\n?```$", "", cleaned)
-    try:
-        return _json.loads(cleaned)
-    except Exception:
-        m = re.search(r"\{[\s\S]*\}", cleaned)
-        if m:
-            return _json.loads(m.group(0))
-        raise ValueError(f"IA retornou JSON inválido: {raw[:200]}")
+
+    def _parse(raw_str: str) -> dict:
+        cleaned = raw_str.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+        try:
+            return _json.loads(cleaned)
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", cleaned)
+            if m:
+                return _json.loads(m.group(0))
+            raise ValueError(f"IA retornou JSON inválido: {raw_str[:200]}")
+
+    result = _parse(raw)
+
+    # Validate complementar bullets — reject generic ones and retry once
+    GENERIC_PATTERNS = [
+        r"alta durabilidade", r"design moderno", r"qualidade premium",
+        r"excelente custo[- ]benef[ií]cio", r"f[áa]cil manuseio", r"f[áa]cil instala[cç][ãa]o",
+        r"qualidade garantida", r"acabamento premium",
+    ]
+    def _bullets(html: str) -> list[str]:
+        return [m.group(1).strip() for m in re.finditer(r"<li>(.*?)</li>", html or "", flags=re.I | re.S)]
+
+    def _is_bad(bullets: list[str], product_title: str) -> str | None:
+        if len(bullets) < 6:
+            return f"apenas {len(bullets)} bullets — precisa 6 a 8"
+        # Check generic
+        for b in bullets:
+            low = b.lower().strip()
+            for pat in GENERIC_PATTERNS:
+                if re.fullmatch(rf"\W*{pat}\W*\.?", low) or low == pat.replace(r"[- ]", " ").replace(r"[ií]", "i").replace(r"[áa]", "a").replace(r"[cç]", "c").replace(r"[ãa]", "a"):
+                    return f"bullet genérico proibido: '{b}'"
+        # Check first bullet isn't just product name
+        title_norm = re.sub(r"\W+", "", product_title.lower())
+        first_norm = re.sub(r"\W+", "", bullets[0].lower())
+        if title_norm and first_norm and (title_norm in first_norm or first_norm in title_norm) and len(first_norm) >= len(title_norm) * 0.7:
+            return "primeiro bullet é o nome do produto (proibido)"
+        return None
+
+    bullets = _bullets(result.get("descricao_complementar", ""))
+    bad_reason = _is_bad(bullets, title)
+    if bad_reason:
+        # Retry once with corrective instruction
+        retry_user = user_text + (
+            f"\n\n⚠️ ATENÇÃO: A versão anterior FALHOU — motivo: {bad_reason}. "
+            "Regenere descricao_complementar com 6-8 bullets ULTRA-ESPECÍFICOS extraindo recursos concretos da descricao_curta. "
+            "PROIBIDO: 'alta durabilidade', 'design moderno', 'qualidade premium', 'fácil manuseio', "
+            "'excelente custo-benefício', repetir o nome do produto. "
+            "Cada bullet DEVE citar uma especificação técnica real (DPI, polegadas, watts, capacidade em ml/L, "
+            "material específico, conectividade, modos de operação, autonomia, voltagem, etc)."
+        )
+        raw2 = await _llm_generate(system, retry_user, ai_model)
+        try:
+            result = _parse(raw2)
+        except Exception:
+            pass  # keep first result if retry fails to parse
+
+    return result
 
 
 @api_router.post("/bling/enrich")

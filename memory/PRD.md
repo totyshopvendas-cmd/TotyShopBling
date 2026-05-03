@@ -99,6 +99,12 @@ User requested a system integrating **Bling (ERP)** with **JohnDrop (dropshippin
 - **Bug fix frontend**: ProductEditor.jsx tinha lixo de código duplicado no fim causando erro de sintaxe no webpack
 
 ## Iteration 6 (Feb 26, 2026) - Bling OAuth fix + AI uses JohnDrop description
+
+### Iter 6.1 — Bullets específicos (Feb 26, 2026 - tarde)
+- Prompt da IA reescrito: descricao_curta agora tem estrutura headline+pipes / parágrafo intro / recursos detalhados (600-1500 chars). descricao_complementar ganhou regras rígidas: PROIBIDO "alta durabilidade", "design moderno", "qualidade premium", "fácil manuseio", "excelente custo-benefício", e PROIBIDO usar nome do produto como bullet. Cada bullet deve mencionar especificação técnica concreta (DPI, watts, capacidade, conectividade, autonomia, etc).
+- Adicionado retry automático: se IA gerar bullets genéricos, faz nova chamada com correção explícita.
+- Validado em produção contra produto real (Mouse 1600 DPI Bluetooth) → bullets agora citam Bluetooth 5.0, receptor 2.4G, 1600 DPI, 7 modos RGB, USB-C 30h, etc.
+
 ### Fixed
 - **Loop infinito Bling OAuth**: causa raiz era `BLING_REDIRECT_URL` no backend apontando para preview URL antiga (`135872d9-...`) enquanto o frontend rodava em `bling-johndrop-sync...`. Corrigido em `/app/backend/.env`. User cadastrou a nova URL no painel Bling Developer.
 - **BLING_CLIENT_SECRET** atualizado para o secret correto fornecido pelo user.
