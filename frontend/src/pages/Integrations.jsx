@@ -3,7 +3,7 @@ import Layout, { PageHeader } from "../components/Layout";
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
-import { CheckCircle2, XCircle, MessageSquare, Zap, Download } from "lucide-react";
+import { CheckCircle2, XCircle, MessageSquare, Zap, Download, Sparkles } from "lucide-react";
 
 const SERVICES = [
   {
@@ -62,6 +62,21 @@ export default function Integrations() {
       const { data } = await api.post("/integrations/toggle", { service, connected, webhook });
       setStatus(data);
       toast.success(connected ? "Conectado" : "Desconectado");
+    } catch (_e) { toast.error("Falha"); }
+  };
+
+  const connectBling = async () => {
+    try {
+      const { data } = await api.get("/bling/authorize-url");
+      window.location.href = data.url;
+    } catch (_e) { toast.error("Falha ao iniciar OAuth Bling"); }
+  };
+
+  const disconnectBling = async () => {
+    try {
+      await api.post("/bling/disconnect");
+      toast.success("Bling desconectada");
+      await load();
     } catch (_e) { toast.error("Falha"); }
   };
 

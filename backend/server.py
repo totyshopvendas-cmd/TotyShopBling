@@ -23,6 +23,15 @@ from johndrop_client import (
     encrypt_secret,
     decrypt_secret,
 )
+from bling_client import (
+    BlingClient,
+    BlingAuthError,
+    BlingAPIError,
+    build_authorize_url,
+    generate_state,
+    exchange_code_for_tokens,
+    refresh_access_token,
+)
 
 
 ROOT_DIR = Path(__file__).parent
@@ -36,6 +45,10 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
 JWT_ALGORITHM = os.environ.get('JWT_ALGORITHM', 'HS256')
 JWT_EXPIRE_HOURS = int(os.environ.get('JWT_EXPIRE_HOURS', '168'))
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+
+BLING_CLIENT_ID = os.environ.get('BLING_CLIENT_ID', '')
+BLING_CLIENT_SECRET = os.environ.get('BLING_CLIENT_SECRET', '')
+BLING_REDIRECT_URL = os.environ.get('BLING_REDIRECT_URL', '')
 
 app = FastAPI(title="BlingDrop API")
 api_router = APIRouter(prefix="/api")
@@ -1166,6 +1179,22 @@ async def integration_status(user: UserPublic = Depends(get_current_user)):
         await db.integrations.insert_one(doc)
         doc.pop("_id", None)
     doc.pop("user_id", None)
+    # Sync real Bling status from credentials
+    bling_cred = await db.bling_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    if bling_cred:
+        doc["bling"] = {
+            **doc.get("bling", {}),
+            "connected": True,
+            "token_valid": True,
+            "last_sync": bling_cred.get("connected_at"),
+            "expires_at": bling_cred.get("expires_at"),
+        }
+    else:
+        doc["bling"] = {
+            **doc.get("bling", {}),
+            "connected": False,
+            "token_valid": False,
+        }
     return doc
 
 
@@ -1689,6 +1718,325 @@ async def johndrop_history(user: UserPublic = Depends(get_current_user)):
     ).sort("registered_at", -1).limit(200)
     items = await cursor.to_list(200)
     return {"items": items, "total": len(items)}
+
+
+# ============ Bling OAuth + API ============
+@api_router.get("/bling/authorize-url")
+async def bling_authorize_url(user: UserPublic = Depends(get_current_user)):
+    """Retorna URL para o usuário iniciar o OAuth no Bling."""
+    if not BLING_CLIENT_ID or not BLING_REDIRECT_URL:
+        raise HTTPException(status_code=500, detail="Bling não configurado no servidor")
+    state = generate_state()
+    # Save state tied to user_id (10 min TTL)
+    await db.bling_oauth_states.insert_one({
+        "state": state,
+        "user_id": user.user_id,
+        "created_at": _now(),
+    })
+    url = build_authorize_url(BLING_CLIENT_ID, BLING_REDIRECT_URL, state)
+    return {"url": url, "state": state}
+
+
+class BlingCallbackIn(BaseModel):
+    code: str
+    state: str
+
+
+@api_router.post("/bling/callback")
+async def bling_callback(data: BlingCallbackIn, user: UserPublic = Depends(get_current_user)):
+    """Troca o code por tokens e salva criptografados."""
+    state_doc = await db.bling_oauth_states.find_one({"state": data.state}, {"_id": 0})
+    if not state_doc:
+        raise HTTPException(status_code=400, detail="State inválido ou expirado")
+    if state_doc["user_id"] != user.user_id:
+        raise HTTPException(status_code=403, detail="State pertence a outro usuário")
+    await db.bling_oauth_states.delete_many({"state": data.state})
+
+    try:
+        tokens = await exchange_code_for_tokens(BLING_CLIENT_ID, BLING_CLIENT_SECRET, data.code)
+    except BlingAuthError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Falha de rede Bling: {e}")
+
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    expires_in = tokens.get("expires_in", 21600)
+    if not access_token:
+        raise HTTPException(status_code=502, detail="Bling não retornou access_token")
+
+    await db.bling_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "user_id": user.user_id,
+            "access_token_enc": encrypt_secret(access_token, JWT_SECRET),
+            "refresh_token_enc": encrypt_secret(refresh_token, JWT_SECRET) if refresh_token else None,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat(),
+            "connected_at": _now(),
+        }},
+        upsert=True,
+    )
+    await db.integrations.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "user_id": user.user_id,
+            "bling.connected": True,
+            "bling.token_valid": True,
+            "bling.last_sync": _now(),
+        }},
+        upsert=True,
+    )
+    return {"connected": True}
+
+
+async def _get_bling_access_token(user_id: str) -> str:
+    """Obtém access_token válido, renova se necessário."""
+    cred = await db.bling_credentials.find_one({"user_id": user_id}, {"_id": 0})
+    if not cred:
+        raise HTTPException(status_code=400, detail="Conecte sua Bling primeiro")
+    expires_at = cred.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    # Refresh se faltam menos de 5 min
+    if expires_at <= datetime.now(timezone.utc) + timedelta(minutes=5):
+        try:
+            refresh_token = decrypt_secret(cred["refresh_token_enc"], JWT_SECRET)
+            tokens = await refresh_access_token(BLING_CLIENT_ID, BLING_CLIENT_SECRET, refresh_token)
+            access_token = tokens.get("access_token")
+            new_refresh = tokens.get("refresh_token") or refresh_token
+            expires_in = tokens.get("expires_in", 21600)
+            await db.bling_credentials.update_one(
+                {"user_id": user_id},
+                {"$set": {
+                    "access_token_enc": encrypt_secret(access_token, JWT_SECRET),
+                    "refresh_token_enc": encrypt_secret(new_refresh, JWT_SECRET),
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat(),
+                }},
+            )
+            return access_token
+        except BlingAuthError as e:
+            raise HTTPException(status_code=401, detail=f"Falha ao renovar token Bling: {e}")
+    return decrypt_secret(cred["access_token_enc"], JWT_SECRET)
+
+
+@api_router.post("/bling/disconnect")
+async def bling_disconnect(user: UserPublic = Depends(get_current_user)):
+    await db.bling_credentials.delete_one({"user_id": user.user_id})
+    await db.integrations.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"bling.connected": False, "bling.token_valid": False}},
+    )
+    return {"disconnected": True}
+
+
+@api_router.get("/bling/status")
+async def bling_status(user: UserPublic = Depends(get_current_user)):
+    cred = await db.bling_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    if not cred:
+        return {"connected": False}
+    expires_at = cred.get("expires_at")
+    return {
+        "connected": True,
+        "expires_at": expires_at,
+        "connected_at": cred.get("connected_at"),
+    }
+
+
+@api_router.get("/bling/products")
+async def bling_list_products(
+    page: int = 1,
+    limit: int = 100,
+    user: UserPublic = Depends(get_current_user),
+):
+    token = await _get_bling_access_token(user.user_id)
+    async with BlingClient(token) as c:
+        try:
+            items = await c.list_products(page=page, limit=limit)
+        except BlingAuthError as e:
+            raise HTTPException(status_code=401, detail=str(e))
+        except BlingAPIError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    # Flag which are already enriched in our log
+    codes = [it.get("codigo") for it in items if it.get("codigo")]
+    enriched = await db.bling_enrich_log.find(
+        {"user_id": user.user_id, "bling_code": {"$in": codes}},
+        {"_id": 0, "bling_code": 1},
+    ).to_list(len(codes))
+    enriched_codes = {e["bling_code"] for e in enriched}
+    for it in items:
+        it["already_enriched"] = it.get("codigo") in enriched_codes
+    return {"items": items, "page": page, "limit": limit}
+
+
+@api_router.get("/bling/categories")
+async def bling_list_categories(user: UserPublic = Depends(get_current_user)):
+    token = await _get_bling_access_token(user.user_id)
+    async with BlingClient(token) as c:
+        try:
+            items = await c.list_categories()
+        except BlingAPIError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    return {"items": items}
+
+
+class BlingEnrichIn(BaseModel):
+    bling_product_ids: List[int]
+    ai_model: Literal["claude", "gpt"] = "claude"
+    auto_create_categories: bool = True
+    supplier_name: str = "JohnDrop"
+
+
+async def _ai_enrich_product(title: str, code: str, existing_categories: list[dict], ai_model: str) -> dict:
+    """Usa IA pra sugerir: categoria, NCM, descrição completa, dimensões, peso."""
+    cat_names = [c.get("descricao", "") for c in existing_categories]
+    cat_list = "\n".join(f"- {n}" for n in cat_names[:40])
+
+    system = (
+        "Você é um especialista em cadastro de produtos no ERP Bling. "
+        "Analise o produto abaixo e retorne JSON com os seguintes campos:\n"
+        "- descricao_completa: descrição longa em PT-BR, 500-900 caracteres, 2-3 parágrafos, sem emojis\n"
+        "- descricao_complementar: 1 linha curta (até 150 caracteres) com principais benefícios\n"
+        "- categoria_sugerida: nome da categoria mais adequada (pode ser uma das existentes OU criar nova)\n"
+        "- ncm: código NCM de 8 dígitos adequado ao produto (retorne apenas números)\n"
+        "- peso_kg: peso em kg (número decimal)\n"
+        "- altura_cm: altura em cm (número decimal)\n"
+        "- largura_cm: largura em cm (número decimal)\n"
+        "- comprimento_cm: comprimento em cm (número decimal)\n"
+        "- unidade: unidade de medida ('Un', 'Pc', 'Cx', etc)\n\n"
+        "Retorne APENAS JSON válido, sem markdown, sem aspas extras, sem explicação."
+    )
+    user_text = (
+        f"Produto: {title}\n"
+        f"Código/SKU: {code}\n\n"
+        f"Categorias já existentes no Bling:\n{cat_list or '(nenhuma)'}\n\n"
+        "Analise e retorne o JSON."
+    )
+    raw = await _llm_generate(system, user_text, ai_model)
+    import json as _json
+    # Clean markdown fences if any
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+    try:
+        return _json.loads(cleaned)
+    except Exception:
+        # Try to extract JSON block
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            return _json.loads(m.group(0))
+        raise ValueError(f"IA retornou JSON inválido: {raw[:200]}")
+
+
+@api_router.post("/bling/enrich")
+async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_current_user)):
+    """Analisa cada produto do Bling com IA e preenche: descrição, NCM, categoria (cria se não existir),
+    dimensões, fornecedor. NUNCA mexe em título, SKU ou preço."""
+    token = await _get_bling_access_token(user.user_id)
+    enriched = 0
+    failed: list[dict] = []
+    results: list[dict] = []
+
+    async with BlingClient(token) as c:
+        # Load once
+        try:
+            categories = await c.list_categories()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Falha ao listar categorias Bling: {e}")
+        cat_by_name = {c.get("descricao", "").lower().strip(): c for c in categories}
+
+        for bling_id in data.bling_product_ids:
+            try:
+                product = await c.get_product(bling_id)
+                current_title = product.get("nome", "")
+                current_code = product.get("codigo", "")
+
+                ai = await _ai_enrich_product(current_title, current_code, categories, data.ai_model)
+
+                # Resolve category
+                cat_name = (ai.get("categoria_sugerida") or "").strip()
+                cat_id = None
+                if cat_name:
+                    existing = cat_by_name.get(cat_name.lower())
+                    if existing:
+                        cat_id = existing.get("id")
+                    elif data.auto_create_categories:
+                        new_cat = await c.create_category(cat_name)
+                        cat_id = new_cat.get("id")
+                        cat_by_name[cat_name.lower()] = new_cat
+                        categories.append(new_cat)
+
+                # Build update payload - PRESERVES title, code, price
+                payload = {
+                    "nome": product.get("nome"),  # preserve
+                    "codigo": product.get("codigo"),  # preserve
+                    "preco": product.get("preco"),  # preserve
+                    "tipo": product.get("tipo", "P"),
+                    "situacao": product.get("situacao", "A"),
+                    "formato": product.get("formato", "S"),
+                    "descricaoCurta": ai.get("descricao_complementar") or product.get("descricaoCurta"),
+                    "descricaoComplementar": ai.get("descricao_completa") or product.get("descricaoComplementar"),
+                    "unidade": ai.get("unidade") or product.get("unidade", "Un"),
+                    "pesoLiquido": float(ai.get("peso_kg") or 0) or product.get("pesoLiquido", 0),
+                    "pesoBruto": float(ai.get("peso_kg") or 0) or product.get("pesoBruto", 0),
+                    "dimensoes": {
+                        "largura": float(ai.get("largura_cm") or 0) or (product.get("dimensoes") or {}).get("largura", 0),
+                        "altura": float(ai.get("altura_cm") or 0) or (product.get("dimensoes") or {}).get("altura", 0),
+                        "profundidade": float(ai.get("comprimento_cm") or 0) or (product.get("dimensoes") or {}).get("profundidade", 0),
+                        "unidadeMedida": 1,  # cm
+                    },
+                    "tributacao": {
+                        **(product.get("tributacao") or {}),
+                        "ncm": str(ai.get("ncm") or product.get("tributacao", {}).get("ncm", "")).replace(".", "").replace("-", ""),
+                    },
+                }
+                if cat_id:
+                    payload["categoria"] = {"id": cat_id}
+
+                await c.update_product(bling_id, payload)
+
+                await db.bling_enrich_log.insert_one({
+                    "user_id": user.user_id,
+                    "bling_product_id": bling_id,
+                    "bling_code": current_code,
+                    "bling_title": current_title,
+                    "category_assigned": cat_name,
+                    "ncm": ai.get("ncm"),
+                    "ai_model": data.ai_model,
+                    "enriched_at": _now(),
+                })
+                enriched += 1
+                results.append({
+                    "bling_product_id": bling_id,
+                    "code": current_code,
+                    "title": current_title,
+                    "category": cat_name,
+                    "ncm": ai.get("ncm"),
+                    "peso_kg": ai.get("peso_kg"),
+                })
+            except Exception as e:
+                failed.append({"bling_product_id": bling_id, "reason": str(e)})
+
+    return {
+        "enriched": enriched,
+        "failed": failed,
+        "results": results,
+        "total": len(data.bling_product_ids),
+    }
+
+
+@api_router.get("/bling/enrich-history")
+async def bling_enrich_history(user: UserPublic = Depends(get_current_user)):
+    cursor = db.bling_enrich_log.find(
+        {"user_id": user.user_id}, {"_id": 0, "user_id": 0}
+    ).sort("enriched_at", -1).limit(200)
+    items = await cursor.to_list(200)
+    return {"items": items, "total": len(items)}
+
+
+# ============ End Bling ============
 
 
 class JohnDropPushIn(BaseModel):

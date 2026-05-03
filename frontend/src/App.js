@@ -13,6 +13,8 @@ import Integrations from "./pages/Integrations";
 import Pricing from "./pages/Pricing";
 import JohnDropCatalog from "./pages/JohnDropCatalog";
 import History from "./pages/History";
+import BlingCallback from "./pages/BlingCallback";
+import BlingCatalog from "./pages/BlingCatalog";
 
 function AppRouter() {
   const location = useLocation();
@@ -30,6 +32,8 @@ function AppRouter() {
       <Route path="/pricing" element={<ProtectedRoute><Pricing /></ProtectedRoute>} />
       <Route path="/johndrop-catalog" element={<ProtectedRoute><JohnDropCatalog /></ProtectedRoute>} />
       <Route path="/history" element={<ProtectedRoute><History /></ProtectedRoute>} />
+      <Route path="/bling-catalog" element={<ProtectedRoute><BlingCatalog /></ProtectedRoute>} />
+      <Route path="/auth/bling/callback" element={<ProtectedRoute><BlingCallback /></ProtectedRoute>} />
       <Route path="/integrations" element={<ProtectedRoute><Integrations /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
