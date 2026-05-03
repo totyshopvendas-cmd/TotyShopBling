@@ -16,6 +16,13 @@ from cryptography.fernet import Fernet
 
 BASE_URL = "https://app.jonhdrop.com.br"
 
+# Integration channel IDs (mapped from app.jonhdrop.com.br/dashboard/product/create/*)
+INTEGRATION_TOTYSHOP_BLING = "1760"
+INTEGRATION_TOTYSHOP_KWAI = "1833"
+INTEGRATION_TOTYSHOP_AMAZON = "1835"
+INTEGRATION_TOTYSHOP_TEMU = "1836"
+INTEGRATION_TOTYSHOP_SHOPEE = "1837"
+
 
 # ---------- credential encryption ----------
 def _fernet(secret: str) -> Fernet:
@@ -243,13 +250,18 @@ class JohnDropClient:
             raise JohnDropAuthError("Sessão expirada")
         return _parse_form_fields(r.text)
 
-    async def push_product(self, jd_id: str, patch: dict) -> dict:
+    async def push_product(self, jd_id: str, patch: dict, integration_ids: Optional[list] = None) -> dict:
         """Re-submit the product form with overrides. Preserves all other fields.
-        patch keys are the override values (e.g. {'name': 'Novo Titulo', 'description': '...', 'sale_value': '105,63'})."""
+        patch keys are the override values.
+        integration_ids: se fornecido, sobrescreve 'integrations[]' com apenas esses IDs
+        (útil para forçar só TotyShop-Bling em vez das 5 integrações padrão)."""
         fields = await self.fetch_product_form(jd_id)
         # Merge: list fields stay, scalar fields get overridden
         for k, v in patch.items():
             fields[k] = v
+        # Override integrations if specified
+        if integration_ids is not None:
+            fields["integrations[]"] = list(integration_ids)
 
         # Manually URL-encode to avoid httpx 0.28 bug with list-of-tuples data= param
         from urllib.parse import urlencode

@@ -19,6 +19,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 from johndrop_client import (
     JohnDropClient,
     JohnDropAuthError,
+    INTEGRATION_TOTYSHOP_BLING,
     encrypt_secret,
     decrypt_secret,
 )
@@ -611,6 +612,7 @@ async def bulk_push_johndrop(data: BulkIdsIn, user: UserPublic = Depends(get_cur
                         "description": p.get("description") or p["title"],
                         "sale_value": sale_value_str,
                     },
+                    integration_ids=[INTEGRATION_TOTYSHOP_BLING],
                 )
                 if result["success"]:
                     await db.products.update_one(
@@ -1729,6 +1731,7 @@ async def johndrop_push(
                     "description": description,
                     "sale_value": sale_value_str,
                 },
+                integration_ids=[INTEGRATION_TOTYSHOP_BLING],
             )
         except JohnDropAuthError as e:
             raise HTTPException(status_code=401, detail=str(e))
