@@ -176,3 +176,32 @@ class BlingClient:
         if r.status_code != 200:
             raise BlingAPIError(f"list_deposits: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", [])
+
+    # ---- Campos Customizados (produtos) ----
+    async def list_custom_field_modules(self) -> list:
+        r = await self._client.get("/campos-customizados/modulos")
+        if r.status_code != 200:
+            return []
+        return r.json().get("data", [])
+
+    async def list_custom_fields(self, module_id: int) -> list:
+        """Lista campos customizados de um módulo. Para produtos, idModulo costuma ser específico.
+        Retorna definições com {id, nome, tipo, valoresDePreenchimento?}."""
+        r = await self._client.get(f"/campos-customizados/modulos/{module_id}")
+        if r.status_code != 200:
+            return []
+        return r.json().get("data", [])
+
+    async def list_product_custom_fields(self) -> list:
+        """Tenta localizar o módulo de produtos e lista seus campos."""
+        modulos = await self.list_custom_field_modules()
+        # Identifica o módulo de produtos pelo nome
+        produto_mod = None
+        for m in modulos:
+            nome = (m.get("nome") or "").lower()
+            if "produto" in nome:
+                produto_mod = m
+                break
+        if not produto_mod:
+            return []
+        return await self.list_custom_fields(produto_mod["id"])

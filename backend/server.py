@@ -1888,34 +1888,65 @@ class BlingEnrichIn(BaseModel):
     supplier_name: str = "JohnDrop"
 
 
-async def _ai_enrich_product(title: str, code: str, existing_categories: list[dict], ai_model: str) -> dict:
-    """Usa IA pra sugerir: categoria, NCM, descrição completa, dimensões, peso."""
+async def _ai_enrich_product(
+    title: str,
+    code: str,
+    existing_categories: list[dict],
+    custom_fields: list[dict],
+    ai_model: str,
+) -> dict:
+    """Usa IA pra sugerir: descrição principal + bullets, categoria, NCM, dimensões + campos customizados aplicáveis."""
     cat_names = [c.get("descricao", "") for c in existing_categories]
-    cat_list = "\n".join(f"- {n}" for n in cat_names[:40])
+    cat_list = "\n".join(f"- {n}" for n in cat_names[:60])
+
+    cf_lines = []
+    for cf in custom_fields:
+        nome = cf.get("nome", "")
+        tipo = cf.get("tipo", "")
+        valores = cf.get("valoresDePreenchimento") or cf.get("valoresPreenchimento") or []
+        val_hint = ""
+        if valores:
+            sample = [v.get("valor") if isinstance(v, dict) else str(v) for v in valores[:6]]
+            val_hint = f" (opções: {', '.join(sample)})"
+        cf_lines.append(f"- {nome} ({tipo}){val_hint}")
+    cf_list = "\n".join(cf_lines) if cf_lines else "(nenhum campo customizado disponível)"
 
     system = (
         "Você é um especialista em cadastro de produtos no ERP Bling. "
-        "Analise o produto abaixo e retorne JSON com os seguintes campos:\n"
-        "- descricao_completa: descrição longa em PT-BR, 500-900 caracteres, 2-3 parágrafos, sem emojis\n"
-        "- descricao_complementar: 1 linha curta (até 150 caracteres) com principais benefícios\n"
-        "- categoria_sugerida: nome da categoria mais adequada (pode ser uma das existentes OU criar nova)\n"
-        "- ncm: código NCM de 8 dígitos adequado ao produto (retorne apenas números)\n"
-        "- peso_kg: peso em kg (número decimal)\n"
-        "- altura_cm: altura em cm (número decimal)\n"
-        "- largura_cm: largura em cm (número decimal)\n"
-        "- comprimento_cm: comprimento em cm (número decimal)\n"
-        "- unidade: unidade de medida ('Un', 'Pc', 'Cx', etc)\n\n"
-        "Retorne APENAS JSON válido, sem markdown, sem aspas extras, sem explicação."
+        "Analise o produto e retorne APENAS um JSON válido (sem markdown, sem explicação) com:\n\n"
+        "- descricao_curta: DESCRIÇÃO PRINCIPAL completa, profissional, pronta para venda. "
+        "Entre 500-900 caracteres. 2-3 parágrafos contínuos. Sem emojis. Sem bullet points. "
+        "Rica em características técnicas, benefícios e público-alvo. Tom profissional.\n\n"
+        "- descricao_complementar: HTML com 6 a 8 bullets no formato '<ul><li>texto</li><li>texto</li></ul>'. "
+        "Cada bullet com 1 característica/benefício técnico curto (80-160 chars). "
+        "Sem introdução, apenas a lista <ul><li>. Extrair os pontos-chave da descrição principal.\n\n"
+        "- categoria_sugerida: nome da categoria mais adequada. Se uma das existentes servir, use exatamente o nome dela. "
+        "Se nenhuma servir, proponha uma nova categoria descritiva em português.\n\n"
+        "- ncm: código NCM de 8 dígitos adequado ao produto (apenas números, sem pontos/traços)\n"
+        "- peso_kg: peso em kg (número decimal realista para o produto)\n"
+        "- altura_cm: altura em cm\n"
+        "- largura_cm: largura em cm\n"
+        "- comprimento_cm: comprimento em cm\n"
+        "- unidade: 'Un', 'Pc' ou 'Cx' conforme o produto\n\n"
+        "- campos_customizados: DICT (objeto) mapeando NOME DO CAMPO para VALOR sugerido. "
+        "Preencha APENAS os campos que realmente se aplicam ao produto (ex: 'Público-alvo' sempre aplica, "
+        "mas 'Idade mínima recomendada para jogo de tabuleiro' só aplica se for jogo). "
+        "Se o campo tiver opções pré-definidas, use uma delas. "
+        "Se não tiver certeza se aplica, NÃO inclua o campo. Exemplo: {\"Público-alvo\": \"Adulto\", \"Peso do item\": \"0.2\"}\n\n"
+        "REGRAS IMPORTANTES:\n"
+        "1. NÃO inclua nome de marca na descrição (produtos de múltiplas marcas)\n"
+        "2. NÃO use emojis\n"
+        "3. Retorne APENAS JSON válido puro, sem markdown"
     )
     user_text = (
         f"Produto: {title}\n"
         f"Código/SKU: {code}\n\n"
-        f"Categorias já existentes no Bling:\n{cat_list or '(nenhuma)'}\n\n"
+        f"Categorias existentes no Bling:\n{cat_list or '(nenhuma)'}\n\n"
+        f"Campos customizados disponíveis no Bling:\n{cf_list}\n\n"
         "Analise e retorne o JSON."
     )
     raw = await _llm_generate(system, user_text, ai_model)
     import json as _json
-    # Clean markdown fences if any
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
@@ -1923,7 +1954,6 @@ async def _ai_enrich_product(title: str, code: str, existing_categories: list[di
     try:
         return _json.loads(cleaned)
     except Exception:
-        # Try to extract JSON block
         m = re.search(r"\{[\s\S]*\}", cleaned)
         if m:
             return _json.loads(m.group(0))
@@ -1946,6 +1976,12 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Falha ao listar categorias Bling: {e}")
         cat_by_name = {c.get("descricao", "").lower().strip(): c for c in categories}
+        # Load custom field definitions (may be empty if user doesn't have any)
+        try:
+            custom_fields = await c.list_product_custom_fields()
+        except Exception:
+            custom_fields = []
+        cf_by_name = {cf.get("nome", "").lower().strip(): cf for cf in custom_fields}
 
         for bling_id in data.bling_product_ids:
             try:
@@ -1953,7 +1989,9 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                 current_title = product.get("nome", "")
                 current_code = product.get("codigo", "")
 
-                ai = await _ai_enrich_product(current_title, current_code, categories, data.ai_model)
+                ai = await _ai_enrich_product(
+                    current_title, current_code, categories, custom_fields, data.ai_model
+                )
 
                 # Resolve category
                 cat_name = (ai.get("categoria_sugerida") or "").strip()
@@ -1968,6 +2006,18 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         cat_by_name[cat_name.lower()] = new_cat
                         categories.append(new_cat)
 
+                # Map AI's field-name dict -> real custom field IDs
+                campos_customizados_payload = []
+                ai_campos = ai.get("campos_customizados") or {}
+                if isinstance(ai_campos, dict):
+                    for field_name, value in ai_campos.items():
+                        cf_def = cf_by_name.get(str(field_name).lower().strip())
+                        if cf_def and value not in (None, ""):
+                            campos_customizados_payload.append({
+                                "idCampoCustomizado": cf_def.get("id"),
+                                "valor": str(value),
+                            })
+
                 # Build update payload - PRESERVES title, code, price
                 payload = {
                     "nome": product.get("nome"),  # preserve
@@ -1976,8 +2026,8 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     "tipo": product.get("tipo", "P"),
                     "situacao": product.get("situacao", "A"),
                     "formato": product.get("formato", "S"),
-                    "descricaoCurta": ai.get("descricao_complementar") or product.get("descricaoCurta"),
-                    "descricaoComplementar": ai.get("descricao_completa") or product.get("descricaoComplementar"),
+                    "descricaoCurta": ai.get("descricao_curta") or product.get("descricaoCurta"),
+                    "descricaoComplementar": ai.get("descricao_complementar") or product.get("descricaoComplementar"),
                     "unidade": ai.get("unidade") or product.get("unidade", "Un"),
                     "pesoLiquido": float(ai.get("peso_kg") or 0) or product.get("pesoLiquido", 0),
                     "pesoBruto": float(ai.get("peso_kg") or 0) or product.get("pesoBruto", 0),
@@ -1994,6 +2044,8 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                 }
                 if cat_id:
                     payload["categoria"] = {"id": cat_id}
+                if campos_customizados_payload:
+                    payload["camposCustomizados"] = campos_customizados_payload
 
                 await c.update_product(bling_id, payload)
 
@@ -2015,6 +2067,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     "category": cat_name,
                     "ncm": ai.get("ncm"),
                     "peso_kg": ai.get("peso_kg"),
+                    "campos_customizados_count": len(campos_customizados_payload),
                 })
             except Exception as e:
                 failed.append({"bling_product_id": bling_id, "reason": str(e)})
