@@ -2098,6 +2098,43 @@ async def _ai_enrich_product(
     return result
 
 
+@api_router.get("/bling/list-suppliers")
+async def bling_list_suppliers(user: UserPublic = Depends(get_current_user)):
+    """Debug endpoint: lista todos os contatos do Bling (com filtro client-side por tipo Fornecedor quando possível)."""
+    token = await _get_bling_access_token(user.user_id)
+    suppliers = []
+    async with BlingClient(token) as c:
+        for page in range(1, 11):
+            try:
+                r = await c._req("GET", "/contatos", params={"pagina": page, "limite": 100})
+            except Exception as e:
+                return {"error": str(e), "fetched": len(suppliers)}
+            if r.status_code != 200:
+                return {"error": f"status {r.status_code} - {r.text[:200]}", "fetched": len(suppliers)}
+            items = r.json().get("data", [])
+            if not items:
+                break
+            for it in items:
+                tipos = it.get("tipos") or []
+                # tipo can be {id, descricao} or simple string list — keep all but mark fornecedor flag
+                tipo_descs = []
+                for t in tipos:
+                    if isinstance(t, dict):
+                        tipo_descs.append(t.get("descricao") or t.get("id"))
+                    else:
+                        tipo_descs.append(str(t))
+                suppliers.append({
+                    "id": it.get("id"),
+                    "nome": it.get("nome"),
+                    "fantasia": it.get("fantasia"),
+                    "numeroDocumento": it.get("numeroDocumento"),
+                    "tipos": tipo_descs,
+                })
+            if len(items) < 100:
+                break
+    return {"total": len(suppliers), "items": suppliers}
+
+
 @api_router.get("/bling/find-supplier")
 async def bling_find_supplier(query: str = "Jonh Variedades", user: UserPublic = Depends(get_current_user)):
     """Debug endpoint: procura um contato pelo nome no Bling e retorna o resultado."""
