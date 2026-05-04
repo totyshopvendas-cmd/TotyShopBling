@@ -51,6 +51,17 @@ export default function BlingCatalog() {
   };
 
   const toggleAll = () => {
+    // Toggle ALL filtered items (including already-enriched, for re-enrichment)
+    const allSelected = filtered.every((it) => selected.has(it.id));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) filtered.forEach((it) => next.delete(it.id));
+      else filtered.forEach((it) => next.add(it.id));
+      return next;
+    });
+  };
+
+  const toggleIncomplete = () => {
     const incomplete = filtered.filter((it) => !it.already_enriched);
     const allSelected = incomplete.every((it) => selected.has(it.id));
     setSelected((prev) => {
@@ -153,12 +164,22 @@ export default function BlingCatalog() {
           <label className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-neutral-600 cursor-pointer">
             <input
               type="checkbox"
-              onChange={toggleAll}
+              onChange={toggleIncomplete}
               checked={filtered.filter((it) => !it.already_enriched).every((it) => selected.has(it.id)) && filtered.some((it) => !it.already_enriched)}
               className="accent-[#002FA7] w-4 h-4"
+              data-testid="bling-select-incomplete"
+            />
+            Só incompletos
+          </label>
+          <label className="flex items-center gap-2 text-xs font-mono uppercase tracking-wider text-neutral-600 cursor-pointer">
+            <input
+              type="checkbox"
+              onChange={toggleAll}
+              checked={filtered.length > 0 && filtered.every((it) => selected.has(it.id))}
+              className="accent-[#FF4500] w-4 h-4"
               data-testid="bling-select-all"
             />
-            Selecionar incompletos
+            Todos (re-enriquecer)
           </label>
           <div className="ml-auto font-mono text-[10px] uppercase tracking-wider text-neutral-500">
             {selected.size} sel · página {page}
@@ -193,7 +214,7 @@ export default function BlingCatalog() {
                   return (
                     <tr key={it.id} className={`border-b border-[#E5E5E5] transition-colors ${isSel ? "bg-[#F0F4FF]" : "hover:bg-[#F7F7F7]"}`}>
                       <td className="py-3 px-3">
-                        <input type="checkbox" checked={isSel} onChange={() => toggle(it.id)} disabled={it.already_enriched} className="accent-[#002FA7] w-4 h-4" data-testid={`bling-select-${it.id}`} />
+                        <input type="checkbox" checked={isSel} onChange={() => toggle(it.id)} className="accent-[#002FA7] w-4 h-4" data-testid={`bling-select-${it.id}`} />
                       </td>
                       <td className="py-3 px-4 font-mono text-xs">{it.codigo}</td>
                       <td className="py-3 px-4 max-w-md">

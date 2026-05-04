@@ -2364,23 +2364,24 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         payload["categoria"] = {"id": cat_id}
                     if campos_customizados_payload:
                         payload["camposCustomizados"] = campos_customizados_payload
-                    # Fornecedor: link supplier contact + JohnDrop product ID + cost
-                    if supplier_contact_id:
-                        forn_entry: dict = {
-                            "contato": {"id": supplier_contact_id},
-                            "padrao": True,
-                        }
-                        # Código = ID INTERNO do produto na JohnDrop (ex: 109909). Fallback: SKU.
-                        if jd_id:
-                            forn_entry["codigo"] = str(jd_id)
-                        elif current_code:
-                            forn_entry["codigo"] = current_code
-                        if jd_cost is not None:
-                            forn_entry["precoCusto"] = jd_cost
-                            forn_entry["precoCompra"] = jd_cost
-                        payload["fornecedores"] = [forn_entry]
 
                     await c.update_product(bling_id, payload)
+
+                    # Fornecedor: chamada separada (Bling API v3 não aceita fornecedores no PUT do produto)
+                    supplier_linked = False
+                    supplier_error = None
+                    if supplier_contact_id:
+                        forn_codigo = str(jd_id) if jd_id else current_code
+                        try:
+                            await c.add_product_supplier(
+                                product_id=bling_id,
+                                contact_id=supplier_contact_id,
+                                codigo=forn_codigo or "",
+                                custo=jd_cost or 0.0,
+                            )
+                            supplier_linked = True
+                        except Exception as se:
+                            supplier_error = str(se)[:300]
 
                     await db.bling_enrich_log.insert_one({
                         "user_id": user.user_id,
@@ -2394,6 +2395,9 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "supplier_contact_id": supplier_contact_id,
                         "supplier_name": supplier_contact_name,
                         "supplier_cost": jd_cost,
+                        "supplier_linked": supplier_linked,
+                        "supplier_error": supplier_error,
+                        "jd_id": jd_id,
                         "enriched_at": _now(),
                     })
                     enriched += 1
@@ -2406,8 +2410,10 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "peso_kg": ai.get("peso_kg"),
                         "campos_customizados_count": len(campos_customizados_payload),
                         "used_johndrop_description": bool(jd_description),
-                        "supplier_linked": bool(supplier_contact_id),
+                        "supplier_linked": supplier_linked,
+                        "supplier_error": supplier_error,
                         "supplier_cost": jd_cost,
+                        "jd_id": jd_id,
                     })
                 except Exception as e:
                     failed.append({"bling_product_id": bling_id, "reason": str(e)})

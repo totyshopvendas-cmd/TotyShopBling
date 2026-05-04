@@ -164,6 +164,38 @@ class BlingClient:
         except Exception:
             return {}
 
+    # ---- Produto-Fornecedor ----
+    async def add_product_supplier(
+        self,
+        product_id: str | int,
+        contact_id: str | int,
+        codigo: str = "",
+        custo: float = 0.0,
+    ) -> dict:
+        """POST /produtos/fornecedores — vincula um fornecedor (contato tipo F) ao produto.
+        Bling não permite PUT do produto incluir fornecedores diretamente — precisa endpoint separado."""
+        body = {
+            "produto": {"id": int(product_id)},
+            "fornecedor": {"id": int(contact_id)},
+        }
+        if codigo:
+            body["codigo"] = str(codigo)
+        if custo and custo > 0:
+            body["precoCusto"] = float(custo)
+            body["precoCompra"] = float(custo)
+        r = await self._req("POST", "/produtos/fornecedores", json=body)
+        if r.status_code == 401:
+            raise BlingAuthError("Token expirado")
+        if r.status_code == 429:
+            raise BlingAPIError("Limite de requisições do Bling atingido")
+        if r.status_code in (200, 201):
+            try:
+                return r.json().get("data", {})
+            except Exception:
+                return {}
+        # Não levanta erro fatal — fornecedor é best-effort
+        raise BlingAPIError(f"add_product_supplier {product_id}: {r.status_code} - {r.text[:400]}")
+
     # ---- Categorias de produtos ----
     async def list_categories(self, page: int = 1, limit: int = 100) -> list:
         r = await self._req("GET", "/categorias/produtos", params={"pagina": page, "limite": limit})
