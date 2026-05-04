@@ -198,13 +198,35 @@ class BlingClient:
             raise BlingAPIError(f"list_contacts: {r.status_code} - {r.text[:200]}")
         return r.json().get("data", [])
 
-    async def find_contact_by_name(self, name_query: str, max_pages: int = 5) -> Optional[dict]:
-        """Search Bling contacts by name (case-insensitive substring). Returns first match or None."""
+    async def find_contact_by_name(self, name_query: str, max_pages: int = 10) -> Optional[dict]:
+        """Search Bling contacts by name (case-insensitive substring).
+        Tries pesquisa=, criterio=2 (nome), and falls back to paging through all contacts."""
         needle = (name_query or "").lower().strip()
         if not needle:
             return None
+        # Strategy 1: use pesquisa param (Bling text search)
+        for criterio in (2, 1):  # 2 = busca por nome no Bling
+            for page in range(1, max_pages + 1):
+                r = await self._req("GET", "/contatos", params={
+                    "pagina": page, "limite": 100,
+                    "criterio": criterio,
+                    "pesquisa": name_query,
+                })
+                if r.status_code != 200:
+                    break
+                items = r.json().get("data", [])
+                if not items:
+                    break
+                for it in items:
+                    nome = (it.get("nome") or "").lower()
+                    fantasia = (it.get("fantasia") or "").lower()
+                    if needle in nome or needle in fantasia or any(w in nome for w in needle.split() if len(w) > 3):
+                        return it
+                if len(items) < 100:
+                    break
+        # Strategy 2: brute-force page through all contacts (last resort)
         for page in range(1, max_pages + 1):
-            r = await self._req("GET", "/contatos", params={"pagina": page, "limite": 100, "criterio": 1, "pesquisa": name_query})
+            r = await self._req("GET", "/contatos", params={"pagina": page, "limite": 100})
             if r.status_code != 200:
                 break
             items = r.json().get("data", [])
@@ -212,7 +234,12 @@ class BlingClient:
                 break
             for it in items:
                 nome = (it.get("nome") or "").lower()
-                if needle in nome:
+                fantasia = (it.get("fantasia") or "").lower()
+                if needle in nome or needle in fantasia:
+                    return it
+                # Also match by individual significant words
+                words = [w for w in needle.split() if len(w) > 3]
+                if words and all(w in nome for w in words):
                     return it
             if len(items) < 100:
                 break

@@ -2098,6 +2098,28 @@ async def _ai_enrich_product(
     return result
 
 
+@api_router.get("/bling/find-supplier")
+async def bling_find_supplier(query: str = "Jonh Variedades", user: UserPublic = Depends(get_current_user)):
+    """Debug endpoint: procura um contato pelo nome no Bling e retorna o resultado."""
+    token = await _get_bling_access_token(user.user_id)
+    async with BlingClient(token) as c:
+        try:
+            contact = await c.find_contact_by_name(query)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Erro buscando contato: {e}")
+    if not contact:
+        return {"found": False, "query": query, "message": "Nenhum contato encontrado com esse nome"}
+    return {
+        "found": True,
+        "query": query,
+        "id": contact.get("id"),
+        "nome": contact.get("nome"),
+        "fantasia": contact.get("fantasia"),
+        "tipo": contact.get("tipo"),
+        "numeroDocumento": contact.get("numeroDocumento"),
+    }
+
+
 @api_router.post("/bling/enrich")
 async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_current_user)):
     """Analisa cada produto do Bling com IA e preenche: descrição, NCM, categoria (cria se não existir),
@@ -2362,6 +2384,12 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
         "failed": failed,
         "results": results,
         "total": len(data.bling_product_ids),
+        "supplier": {
+            "name_searched": data.supplier_name,
+            "found": bool(supplier_contact_id),
+            "id": supplier_contact_id,
+            "matched_name": supplier_contact_name,
+        },
     }
 
 
