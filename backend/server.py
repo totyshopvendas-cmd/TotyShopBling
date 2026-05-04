@@ -2218,6 +2218,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     # Try to fetch original JohnDrop description for context
                     jd_description = ""
                     jd_cost: Optional[float] = None
+                    jd_id: Optional[str] = None
                     if current_code:
                         # Look up jd_id and cost_value by SKU in our products collection
                         prod_doc = await db.products.find_one(
@@ -2228,7 +2229,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                             cv = prod_doc.get("cost_value")
                             if isinstance(cv, (int, float)) and cv > 0:
                                 jd_cost = float(cv)
-                        jd_id = prod_doc.get("jd_id") if prod_doc else None
+                            jd_id = prod_doc.get("jd_id")
                         if jd_id and jd_session:
                             try:
                                 jd_form = await jd_session.fetch_product_form(str(jd_id))
@@ -2363,13 +2364,17 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         payload["categoria"] = {"id": cat_id}
                     if campos_customizados_payload:
                         payload["camposCustomizados"] = campos_customizados_payload
-                    # Fornecedor: link supplier contact + JohnDrop SKU + cost
+                    # Fornecedor: link supplier contact + JohnDrop product ID + cost
                     if supplier_contact_id:
                         forn_entry: dict = {
                             "contato": {"id": supplier_contact_id},
                             "padrao": True,
-                            "codigo": current_code,
                         }
+                        # Código = ID INTERNO do produto na JohnDrop (ex: 109909). Fallback: SKU.
+                        if jd_id:
+                            forn_entry["codigo"] = str(jd_id)
+                        elif current_code:
+                            forn_entry["codigo"] = current_code
                         if jd_cost is not None:
                             forn_entry["precoCusto"] = jd_cost
                             forn_entry["precoCompra"] = jd_cost
