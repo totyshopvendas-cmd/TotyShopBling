@@ -2098,6 +2098,37 @@ async def _ai_enrich_product(
     return result
 
 
+@api_router.get("/johndrop/debug-my-products-html")
+async def johndrop_debug_my_products_html(sku: str = "", user: UserPublic = Depends(get_current_user)):
+    """Debug: retorna o HTML cru da página /dashboard/product (Meus Produtos) pra inspeção."""
+    client = await _get_johndrop_client(user.user_id)
+    async with client as c:
+        await c.ensure_logged_in()
+        params = {"sku": sku} if sku else {}
+        r = await c._client.get("/dashboard/product", params=params)
+        html = r.text
+    # Look for table-like markers + AJAX/datatables indicators + ids
+    import re as _re
+    findings = {
+        "status_code": r.status_code,
+        "url": str(r.url),
+        "html_length": len(html),
+        "has_sku_in_html": sku in html if sku else None,
+        "edit_links_found": _re.findall(r'/dashboard/product/edit/(\d+)', html)[:20],
+        "create_links_found": _re.findall(r'/dashboard/product/create/(\d+)', html)[:20],
+        "data_url_attrs": _re.findall(r'data-url="([^"]+)"', html)[:10],
+        "ajax_calls": _re.findall(r"\.ajax\(\s*\{[^}]*url[^}]*}", html)[:5],
+        "datatables_ajax": _re.findall(r'ajax\s*:\s*["\']([^"\']+)["\']', html)[:10],
+        "table_ids": _re.findall(r'<table[^>]*id="([^"]+)"', html)[:5],
+        "html_first_3k": html[:3000],
+        "html_around_sku": "",
+    }
+    if sku and sku in html:
+        idx = html.index(sku)
+        findings["html_around_sku"] = html[max(0, idx-2000):idx+2000]
+    return findings
+
+
 @api_router.get("/johndrop/find-my-product-id")
 async def johndrop_find_my_product_id(sku: str, user: UserPublic = Depends(get_current_user)):
     """Debug: busca o ID do produto na tela 'Meus Produtos' da JonhDrop pelo SKU."""
