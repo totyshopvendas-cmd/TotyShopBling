@@ -2098,6 +2098,18 @@ async def _ai_enrich_product(
     return result
 
 
+@api_router.get("/johndrop/find-my-product-id")
+async def johndrop_find_my_product_id(sku: str, user: UserPublic = Depends(get_current_user)):
+    """Debug: busca o ID do produto na tela 'Meus Produtos' da JonhDrop pelo SKU."""
+    client = await _get_johndrop_client(user.user_id)
+    async with client as c:
+        try:
+            pid = await c.find_my_product_id_by_sku(sku)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Erro: {e}")
+    return {"sku": sku, "my_product_id": pid}
+
+
 @api_router.get("/bling/list-suppliers")
 async def bling_list_suppliers(user: UserPublic = Depends(get_current_user)):
     """Debug endpoint: lista todos os contatos do Bling (com filtro client-side por tipo Fornecedor quando possível)."""
@@ -2218,7 +2230,8 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     # Try to fetch original JohnDrop description for context
                     jd_description = ""
                     jd_cost: Optional[float] = None
-                    jd_id: Optional[str] = None
+                    jd_id: Optional[str] = None  # supplier catalog id (used for fetch_product_form)
+                    my_product_id: Optional[str] = None  # 'Meus Produtos' id (used as supplier code, e.g. 109908)
                     if current_code:
                         # Look up jd_id and cost_value by SKU in our products collection
                         prod_doc = await db.products.find_one(
@@ -2230,6 +2243,23 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                             if isinstance(cv, (int, float)) and cv > 0:
                                 jd_cost = float(cv)
                             jd_id = prod_doc.get("jd_id")
+                        # Fallback: also check johndrop_register_log (products pushed via register-direct)
+                        if not jd_id:
+                            log_doc = await db.johndrop_register_log.find_one(
+                                {"user_id": user.user_id, "product_code": current_code},
+                                {"_id": 0, "jd_id": 1, "price_cost": 1},
+                                sort=[("registered_at", -1)],
+                            )
+                            if log_doc:
+                                jd_id = log_doc.get("jd_id")
+                                if jd_cost is None and isinstance(log_doc.get("price_cost"), (int, float)):
+                                    jd_cost = float(log_doc["price_cost"])
+                        # Look up "Meus Produtos" id (the 109908 number) via JohnDrop session
+                        if jd_session:
+                            try:
+                                my_product_id = await jd_session.find_my_product_id_by_sku(current_code)
+                            except Exception:
+                                my_product_id = None
                         if jd_id and jd_session:
                             try:
                                 jd_form = await jd_session.fetch_product_form(str(jd_id))
@@ -2371,7 +2401,9 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                     supplier_linked = False
                     supplier_error = None
                     if supplier_contact_id:
-                        forn_codigo = str(jd_id) if jd_id else current_code
+                        # Código do fornecedor = ID do produto na tela "Meus Produtos" da JohnDrop (ex: 109908)
+                        # Fallback: jd_id (catalog supplier id) ou SKU
+                        forn_codigo = my_product_id or (str(jd_id) if jd_id else current_code)
                         try:
                             await c.add_product_supplier(
                                 product_id=bling_id,
@@ -2398,6 +2430,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "supplier_linked": supplier_linked,
                         "supplier_error": supplier_error,
                         "jd_id": jd_id,
+                        "my_product_id": my_product_id,
                         "enriched_at": _now(),
                     })
                     enriched += 1
@@ -2414,6 +2447,7 @@ async def bling_enrich(data: BlingEnrichIn, user: UserPublic = Depends(get_curre
                         "supplier_error": supplier_error,
                         "supplier_cost": jd_cost,
                         "jd_id": jd_id,
+                        "my_product_id": my_product_id,
                     })
                 except Exception as e:
                     failed.append({"bling_product_id": bling_id, "reason": str(e)})

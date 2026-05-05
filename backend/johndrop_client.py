@@ -250,6 +250,47 @@ class JohnDropClient:
             raise JohnDropAuthError("Sessão expirada")
         return _parse_form_fields(r.text)
 
+    async def find_my_product_id_by_sku(self, sku: str, max_pages: int = 30) -> Optional[str]:
+        """Search the user's 'Meus Produtos' page (/dashboard/product) by SKU and return
+        the user-side product Id (the number shown in the 'Id' column, e.g. 109908)."""
+        await self.ensure_logged_in()
+        if not sku:
+            return None
+        for page in range(1, max_pages + 1):
+            r = await self._client.get("/dashboard/product", params={"page": page, "sku": sku})
+            if "/login" in str(r.url):
+                raise JohnDropAuthError("Sessão expirada")
+            html = r.text
+            # Each row in 'Meus produtos' has a link/button with the product id and sku.
+            # Strategy: find any HTML chunk that contains BOTH the SKU and a numeric id.
+            # Look for /dashboard/product/edit/<id> or data attributes referencing the id.
+            # Also try simple table-row scan: extract rows containing sku, then first 5-7 digit number.
+            import re as _re
+            # Try links to edit/{id}
+            for m in _re.finditer(r'/dashboard/product/edit/(\d+)', html):
+                # Look at +/- 800 chars context around the match to confirm SKU is in same row
+                start = max(0, m.start() - 1500)
+                end = min(len(html), m.end() + 500)
+                ctx = html[start:end]
+                if sku in ctx:
+                    return m.group(1)
+            # Fallback: rows in tbody — look for our SKU and find any 6-digit number near it
+            for sku_match in _re.finditer(_re.escape(sku), html):
+                start = max(0, sku_match.start() - 1500)
+                end = min(len(html), sku_match.end() + 1500)
+                ctx = html[start:end]
+                # First "Id" column number — usually 5-9 digits
+                num_match = _re.search(r'>\s*(\d{5,9})\s*<', ctx)
+                if num_match:
+                    return num_match.group(1)
+            # Nothing found on this page and no SKU filter applied? Stop after page 1 if SKU filter gave 0.
+            if "Nenhum registro" in html or "Nenhum produto" in html:
+                break
+            # If we paginated and the page has no rows, stop.
+            if page >= 1 and not _re.search(r'/dashboard/product/edit/\d+', html):
+                break
+        return None
+
     async def push_product(self, jd_id: str, patch: dict, integration_ids: Optional[list] = None) -> dict:
         """Re-submit the product form with overrides. Preserves all other fields.
         patch keys are the override values.
