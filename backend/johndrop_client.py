@@ -252,43 +252,77 @@ class JohnDropClient:
 
     async def find_my_product_id_by_sku(self, sku: str, max_pages: int = 30) -> Optional[str]:
         """Search the user's 'Meus Produtos' page (/dashboard/product) by SKU and return
-        the user-side product Id (the number shown in the 'Id' column, e.g. 109908)."""
+        the user-side product Id (the number shown in the 'Id' column, e.g. 109908).
+        Uses the DataTables AJAX endpoint POST /dashboard/product/datatable."""
         await self.ensure_logged_in()
         if not sku:
             return None
-        for page in range(1, max_pages + 1):
-            r = await self._client.get("/dashboard/product", params={"page": page, "sku": sku})
-            if "/login" in str(r.url):
-                raise JohnDropAuthError("Sessão expirada")
-            html = r.text
-            # Each row in 'Meus produtos' has a link/button with the product id and sku.
-            # Strategy: find any HTML chunk that contains BOTH the SKU and a numeric id.
-            # Look for /dashboard/product/edit/<id> or data attributes referencing the id.
-            # Also try simple table-row scan: extract rows containing sku, then first 5-7 digit number.
-            import re as _re
-            # Try links to edit/{id}
-            for m in _re.finditer(r'/dashboard/product/edit/(\d+)', html):
-                # Look at +/- 800 chars context around the match to confirm SKU is in same row
-                start = max(0, m.start() - 1500)
-                end = min(len(html), m.end() + 500)
-                ctx = html[start:end]
-                if sku in ctx:
-                    return m.group(1)
-            # Fallback: rows in tbody — look for our SKU and find any 6-digit number near it
-            for sku_match in _re.finditer(_re.escape(sku), html):
-                start = max(0, sku_match.start() - 1500)
-                end = min(len(html), sku_match.end() + 1500)
-                ctx = html[start:end]
-                # First "Id" column number — usually 5-9 digits
-                num_match = _re.search(r'>\s*(\d{5,9})\s*<', ctx)
-                if num_match:
-                    return num_match.group(1)
-            # Nothing found on this page and no SKU filter applied? Stop after page 1 if SKU filter gave 0.
-            if "Nenhum registro" in html or "Nenhum produto" in html:
-                break
-            # If we paginated and the page has no rows, stop.
-            if page >= 1 and not _re.search(r'/dashboard/product/edit/\d+', html):
-                break
+
+        # Get CSRF token from /dashboard/product page
+        page_r = await self._client.get("/dashboard/product")
+        if "/login" in str(page_r.url):
+            raise JohnDropAuthError("Sessão expirada")
+        csrf_match = _re.search(r'name="csrf-token"\s+content="([^"]+)"', page_r.text)
+        csrf = csrf_match.group(1) if csrf_match else ""
+        token_match = _CSRF_INPUT_RE.search(page_r.text)
+        token = token_match.group(1) if token_match else csrf
+
+        # DataTables ajax — try multiple parameter shapes
+        candidate_payloads = [
+            # Standard DataTables payload with column-based search
+            {
+                "draw": 1, "start": 0, "length": 25,
+                "search[value]": sku, "search[regex]": "false",
+                "_token": token,
+            },
+            # Custom Sku filter (the page has a "Sku" filter input)
+            {
+                "draw": 1, "start": 0, "length": 25,
+                "sku": sku, "search[value]": "", "search[regex]": "false",
+                "_token": token,
+            },
+            # Just sku
+            {"sku": sku, "_token": token, "draw": 1, "start": 0, "length": 25},
+        ]
+        headers = {
+            "X-CSRF-TOKEN": csrf or token,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{BASE_URL}/dashboard/product",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+        }
+        for payload in candidate_payloads:
+            try:
+                r = await self._client.post("/dashboard/product/datatable", data=payload, headers=headers)
+            except Exception:
+                continue
+            if r.status_code != 200:
+                continue
+            try:
+                js = r.json()
+            except Exception:
+                continue
+            rows = js.get("data") or js.get("rows") or []
+            for row in rows:
+                # Each row may be an object {id, sku, nome, ...} or an array (DataTables HTML mode)
+                if isinstance(row, dict):
+                    row_sku = (row.get("sku") or row.get("Sku") or "")
+                    if row_sku == sku and row.get("id"):
+                        return str(row["id"])
+                    # Sometimes id is embedded in HTML actions column
+                    blob = " ".join(str(v) for v in row.values())
+                elif isinstance(row, list):
+                    blob = " ".join(str(v) for v in row)
+                else:
+                    blob = str(row)
+                if sku in blob:
+                    # extract first 5-9 digit number that's not part of the SKU
+                    for m in _re.finditer(r'(\d{5,9})', blob):
+                        n = m.group(1)
+                        if n not in sku:
+                            return n
+            # If we got a non-empty response with rows but no match, no need to retry other payload shapes
+            if rows:
+                return None
         return None
 
     async def push_product(self, jd_id: str, patch: dict, integration_ids: Optional[list] = None) -> dict:
