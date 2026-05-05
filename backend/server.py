@@ -2107,26 +2107,37 @@ async def johndrop_debug_my_products_html(sku: str = "", user: UserPublic = Depe
         params = {"sku": sku} if sku else {}
         r = await c._client.get("/dashboard/product", params=params)
         html = r.text
-    # Look for table-like markers + AJAX/datatables indicators + ids
+
+        # Try common DataTables endpoint patterns
+        candidate_endpoints = [
+            "/dashboard/product/data",
+            "/dashboard/product/list",
+            "/dashboard/product/datatable",
+            "/dashboard/product/data-list",
+            "/dashboard/product/get-data",
+            "/dashboard/product/all",
+        ]
+        endpoint_results = {}
+        for ep in candidate_endpoints:
+            try:
+                rr = await c._client.get(ep, params={"sku": sku, "draw": 1, "start": 0, "length": 25} if sku else {"draw": 1, "start": 0, "length": 25})
+                endpoint_results[ep] = {
+                    "status": rr.status_code,
+                    "content_type": rr.headers.get("content-type", ""),
+                    "preview": rr.text[:600] if rr.status_code == 200 else "",
+                }
+            except Exception as e:
+                endpoint_results[ep] = {"error": str(e)}
+
     import re as _re
-    findings = {
-        "status_code": r.status_code,
-        "url": str(r.url),
+    return {
         "html_length": len(html),
-        "has_sku_in_html": sku in html if sku else None,
-        "edit_links_found": _re.findall(r'/dashboard/product/edit/(\d+)', html)[:20],
-        "create_links_found": _re.findall(r'/dashboard/product/create/(\d+)', html)[:20],
-        "data_url_attrs": _re.findall(r'data-url="([^"]+)"', html)[:10],
-        "ajax_calls": _re.findall(r"\.ajax\(\s*\{[^}]*url[^}]*}", html)[:5],
-        "datatables_ajax": _re.findall(r'ajax\s*:\s*["\']([^"\']+)["\']', html)[:10],
-        "table_ids": _re.findall(r'<table[^>]*id="([^"]+)"', html)[:5],
-        "html_first_3k": html[:3000],
-        "html_around_sku": "",
+        "all_dashboard_product_urls": list(set(_re.findall(r'/dashboard/product/[a-z0-9\-_]+', html)))[:30],
+        "all_app_jonhdrop_urls": list(set(_re.findall(r'https?://[^"\']+/dashboard/[^"\']+', html)))[:30],
+        "datatables_blocks": _re.findall(r"\$\(['\"]#basic-datatable['\"]\)\.DataTable\([\s\S]{0,3000}?\}\s*\)", html)[:2],
+        "any_datatable_init": _re.findall(r"DataTable\(\s*\{[\s\S]{0,2500}?\}\s*\)", html)[:3],
+        "endpoint_probes": endpoint_results,
     }
-    if sku and sku in html:
-        idx = html.index(sku)
-        findings["html_around_sku"] = html[max(0, idx-2000):idx+2000]
-    return findings
 
 
 @api_router.get("/johndrop/find-my-product-id")
