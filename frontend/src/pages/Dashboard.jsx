@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import Layout, { PageHeader } from "../components/Layout";
 import { api } from "../lib/api";
-import { Package, CheckCircle2, Clock, AlertTriangle, PackageX, ArrowRight } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Package, CheckCircle2, Clock, AlertTriangle, PackageX, ArrowRight, ExternalLink } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 const StatusDot = ({ color }) => (
@@ -23,7 +23,7 @@ const StatCard = ({ label, value, hint, icon: Icon, color, testId }) => (
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [seeding, setSeeding] = useState(false);
+  const navigate = useNavigate();
 
   const load = async () => {
     try {
@@ -38,19 +38,6 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, []);
 
-  const seed = async () => {
-    setSeeding(true);
-    try {
-      const { data } = await api.post("/products/seed");
-      toast.success(`${data.created} produtos importados da JohnDrop`);
-      load();
-    } catch (_e) {
-      toast.error("Falha ao importar");
-    } finally {
-      setSeeding(false);
-    }
-  };
-
   return (
     <Layout>
       <PageHeader
@@ -58,14 +45,22 @@ export default function Dashboard() {
         title="Dashboard"
         description="Métricas em tempo real da sincronização JohnDrop → Bling e cobertura dos marketplaces."
         actions={
-          <button
-            onClick={seed}
-            disabled={seeding}
-            data-testid="seed-products-button"
-            className="border border-[#E5E5E5] hover:border-[#0A0A0A] px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors disabled:opacity-60"
-          >
-            {seeding ? "Importando..." : "Importar mock JohnDrop"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => navigate("/johndrop-catalog")}
+              data-testid="goto-johndrop-catalog"
+              className="border border-[#002FA7] text-[#002FA7] hover:bg-[#002FA7] hover:text-white px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors flex items-center gap-2"
+            >
+              <Package size={12} /> Catálogo JohnDrop
+            </button>
+            <button
+              onClick={() => navigate("/products")}
+              data-testid="goto-my-products"
+              className="border border-[#E5E5E5] hover:border-[#0A0A0A] px-4 py-2 text-xs font-mono uppercase tracking-wider transition-colors flex items-center gap-2"
+            >
+              <ArrowRight size={12} /> Meus Produtos
+            </button>
+          </div>
         }
       />
 
